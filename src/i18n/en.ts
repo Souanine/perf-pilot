@@ -80,6 +80,8 @@ export default {
     noScriptOpen: "No script open",
     createOrOpen:
       "Create a new script, open one from disk, or generate one with AI.",
+    unsavedChanges: "Unsaved changes",
+    saved: "Saved",
   },
   templates: {
     smoke: {

@@ -53,6 +53,13 @@ const activeBuffer = computed(() =>
   scripts.buffers.find((b) => b.filePath === scripts.activePath) ?? null,
 );
 
+/** Look up the open buffer for a sidebar file (if any). Used so the
+ *  sidebar can show the dirty indicator next to files that have unsaved
+ *  changes, even if they aren't currently the active tab. */
+function bufferFor(path: string) {
+  return scripts.buffers.find((b) => b.filePath === path) ?? null;
+}
+
 async function newScript() {
   const stamp = new Date().toISOString().replace(/[:.]/g, "-").slice(0, 19);
   const name = `script-${stamp}.js`;
@@ -233,6 +240,11 @@ vueWatch(
               >
                 <FileCode2 class="h-4 w-4 shrink-0 text-muted-foreground" />
                 <span class="min-w-0 truncate">{{ f.name }}</span>
+                <span
+                  v-if="bufferFor(f.path)?.dirty"
+                  class="h-1.5 w-1.5 shrink-0 rounded-full bg-primary"
+                  :title="t('editor.unsavedChanges')"
+                />
               </button>
               <button
                 class="rounded p-1 text-muted-foreground opacity-0 transition-opacity hover:bg-background hover:text-destructive group-hover:opacity-100"
@@ -255,35 +267,34 @@ vueWatch(
 
     <section class="flex min-w-0 flex-col">
       <div
-        v-if="scripts.buffers.length"
+        v-if="activeBuffer"
         class="flex items-center gap-2 border-b border-border bg-card/40 px-3 py-1.5"
       >
-        <button
-          v-for="b in scripts.buffers"
-          :key="b.filePath"
-          class="flex items-center gap-2 rounded-md px-3 py-1 text-xs transition-colors"
-          :class="
-            b.filePath === scripts.activePath
-              ? 'bg-background shadow-sm'
-              : 'text-muted-foreground hover:bg-accent'
-          "
-          @click="scripts.setActive(b.filePath)"
-        >
-          <span>{{ b.name }}</span>
-          <span v-if="b.dirty" class="h-1.5 w-1.5 rounded-full bg-primary" />
-        </button>
+        <div class="flex min-w-0 items-center gap-2">
+          <FileCode2 class="h-3.5 w-3.5 shrink-0 text-muted-foreground" />
+          <span class="truncate text-xs font-medium">{{ activeBuffer.name }}</span>
+          <span
+            v-if="activeBuffer.dirty"
+            class="h-1.5 w-1.5 shrink-0 rounded-full bg-primary"
+            :title="t('editor.unsavedChanges')"
+          />
+          <span
+            v-else
+            class="shrink-0 text-[10px] uppercase tracking-wider text-muted-foreground"
+          >{{ t('editor.saved') }}</span>
+        </div>
         <div class="ml-auto flex items-center gap-2">
           <Button variant="ghost" size="sm" @click="goToAi">
             <Sparkles class="h-3 w-3" /> {{ t('nav.ai') }}
           </Button>
           <Button variant="outline" size="sm" @click="saveActiveAs" :disabled="!activeBuffer">
-            Save as…
+            {{ t('editor.btnSaveAs') }}
           </Button>
           <Button variant="outline" size="sm" @click="saveActive" :disabled="!activeBuffer">
-            <Save class="h-3 w-3" /> Save
+            <Save class="h-3 w-3" /> {{ t('editor.btnSave') }}
           </Button>
           <Button size="sm" @click="runActive" :disabled="!activeBuffer">
-            <Play class="h-3 w-3" /> Run
+            <Play class="h-3 w-3" /> {{ t('editor.btnRun') }}
           </Button>
         </div>
       </div>

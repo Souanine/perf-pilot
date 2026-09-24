@@ -78,6 +78,8 @@ export default {
     btnAiGenerate: "AI 生成",
     noScriptOpen: "未打开脚本",
     createOrOpen: "新建一个脚本、从磁盘打开一个，或者用 AI 生成一个。",
+    unsavedChanges: "有未保存的修改",
+    saved: "已保存",
   },
   templates: {
     smoke: {
