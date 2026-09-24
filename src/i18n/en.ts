@@ -81,6 +81,63 @@ export default {
     createOrOpen:
       "Create a new script, open one from disk, or generate one with AI.",
   },
+  templates: {
+    smoke: {
+      name: "Smoke test",
+      description: "Tiny, constant load — sanity check before anything bigger.",
+      header: "Smoke test — 5 constant VUs for 30s against a single endpoint.",
+    },
+    load: {
+      name: "Load test (ramping)",
+      description: "Stepwise ramp-up to validate baseline capacity.",
+      header: "Load test — ramp from 0 to 50 VUs over 5 minutes, then hold.",
+    },
+    spike: {
+      name: "Spike test",
+      description: "Sudden traffic surge to test elasticity and recovery.",
+      header: "Spike test — ramp from 0 to 200 VUs in 5s, hold 30s, ramp down.",
+    },
+    stress: {
+      name: "Stress test",
+      description: "Push past expected capacity to find the breaking point.",
+      header: "Stress test — push to 300 VUs, then ramp down. Look for failure rate climbing.",
+    },
+    soak: {
+      name: "Soak test",
+      description: "Sustained low load over a long period to detect memory leaks.",
+      header: "Soak test — 20 VUs for 30 minutes to detect slow memory or resource leaks.",
+    },
+    "api-mix": {
+      name: "API mix (auth + CRUD)",
+      description: "Realistic API workflow: login, list, fetch, create.",
+      header: "API mix — auth, list, fetch, create. Uses __ENV.TOKEN and __ENV.BASE_URL.",
+    },
+    "constant-arrival-rate": {
+      name: "Capacity (constant arrival rate)",
+      description: "Fixed RPS independent of response time — capacity planning and SLA validation.",
+      header: "Constant arrival rate — fixed requests/sec regardless of response latency; ideal for backend capacity and CI perf gates.",
+    },
+    breakpoint: {
+      name: "Breakpoint test",
+      description: "Step up the arrival rate until errors or latency spike — find the system's stable ceiling.",
+      header: "Breakpoint — ramp RPS through stages until p99/error rate breaks. Spot the inflection point.",
+    },
+    grpc: {
+      name: "gRPC health check",
+      description: "Constant-RPS gRPC unary call against the standard health endpoint.",
+      header: "gRPC — k6/net/grpc Health/Check at a fixed rate; requires a k6 build with the grpc module.",
+    },
+    websocket: {
+      name: "WebSocket sustained connections",
+      description: "Hold N WebSocket connections open for minutes with periodic heartbeats.",
+      header: "WebSocket — 100 long-lived connections, ping/pong every 5s, auto-close after 60s.",
+    },
+    "data-driven": {
+      name: "Data-driven (CSV + SharedArray)",
+      description: "Each VU consumes a row from ./data/users.csv via SharedArray.",
+      header: "Data-driven — CSV via papaparse + SharedArray. Each VU gets a stable user record.",
+    },
+  },
   ai: {
     title: "Describe your scenario",
     subtitle:

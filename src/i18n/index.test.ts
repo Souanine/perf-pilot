@@ -43,11 +43,38 @@ describe("i18n module", () => {
       "history",
       "settings",
       "report",
+      "templates",
     ];
     for (const s of sections) {
       const v = tForLocale("zh-CN", s);
       expect(typeof v, `section ${s} should resolve in zh-CN`).toBe("string");
       expect(v.length, `section ${s} in zh-CN should not be empty`).toBeGreaterThan(0);
+    }
+  });
+
+  it("every template entry has non-empty name + description in both locales", () => {
+    const ids = [
+      "smoke",
+      "load",
+      "spike",
+      "stress",
+      "soak",
+      "api-mix",
+      "constant-arrival-rate",
+      "breakpoint",
+      "grpc",
+      "websocket",
+      "data-driven",
+    ];
+    for (const id of ids) {
+      const enName = tForLocale("en", `templates.${id}.name`);
+      const zhName = tForLocale("zh-CN", `templates.${id}.name`);
+      const enDesc = tForLocale("en", `templates.${id}.description`);
+      const zhDesc = tForLocale("zh-CN", `templates.${id}.description`);
+      expect(enName.length, `en templates.${id}.name`).toBeGreaterThan(0);
+      expect(zhName.length, `zh templates.${id}.name`).toBeGreaterThan(0);
+      expect(enDesc.length, `en templates.${id}.description`).toBeGreaterThan(0);
+      expect(zhDesc.length, `zh templates.${id}.description`).toBeGreaterThan(0);
     }
   });
 

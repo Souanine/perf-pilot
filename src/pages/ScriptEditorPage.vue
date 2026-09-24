@@ -118,7 +118,7 @@ async function useTemplate(templateId: string) {
   await scripts.saveAs(full, tpl.build(name));
   templatesOpen.value = false;
   toast.push({
-    title: `Created from ${tpl.name} template`,
+    title: `Created from ${t(tpl.nameKey)} template`,
     description: full,
     variant: "success",
   });
@@ -213,10 +213,10 @@ vueWatch(
             @click="useTemplate(tpl.id)"
           >
             <span class="flex w-full items-center gap-2">
-              <span class="font-medium">{{ tpl.name }}</span>
+              <span class="font-medium">{{ t(tpl.nameKey) }}</span>
               <span class="ml-auto text-[10px] text-muted-foreground">{{ tpl.tag }}</span>
             </span>
-            <span class="text-xs text-muted-foreground">{{ tpl.description }}</span>
+            <span class="text-xs text-muted-foreground">{{ t(tpl.descriptionKey) }}</span>
           </button>
         </div>
       </div>

@@ -79,6 +79,63 @@ export default {
     noScriptOpen: "未打开脚本",
     createOrOpen: "新建一个脚本、从磁盘打开一个，或者用 AI 生成一个。",
   },
+  templates: {
+    smoke: {
+      name: "冒烟测试",
+      description: "轻量恒定负载，作为更大测试前的烟雾检查。",
+      header: "冒烟测试 — 5 个恒定 VU 持续 30 秒，仅命中一个端点。",
+    },
+    load: {
+      name: "负载测试 (渐进加压)",
+      description: "阶梯式加压，验证基线容量。",
+      header: "负载测试 — 5 分钟内从 0 平滑加压到 50 VU 后保持。",
+    },
+    spike: {
+      name: "峰值测试",
+      description: "突发流量冲击，检验系统弹性和恢复能力。",
+      header: "峰值测试 — 5 秒内冲到 200 VU 维持 30 秒再回落。",
+    },
+    stress: {
+      name: "压力测试",
+      description: "突破预期容量，找出系统极限与失败率拐点。",
+      header: "压力测试 — 推到 300 VU 再回落，观察失败率何时开始飙升。",
+    },
+    soak: {
+      name: "浸泡测试",
+      description: "长时间低负载运行，检测内存/资源泄漏。",
+      header: "浸泡测试 — 20 VU 持续 30 分钟，捕获慢速内存或资源泄漏。",
+    },
+    "api-mix": {
+      name: "API 混合 (鉴权 + CRUD)",
+      description: "真实 API 流程：登录、列表、详情、新建。",
+      header: "API 混合 — 鉴权 + 列表 + 详情 + 创建，使用 __ENV.TOKEN 与 __ENV.BASE_URL。",
+    },
+    "constant-arrival-rate": {
+      name: "容量测试 (恒定到达率)",
+      description: "固定每秒请求数，独立于响应时间，专门用于容量与 SLA 验证。",
+      header: "恒定到达率 — 固定 RPS，与响应时间解耦；适合后端容量规划和 CI 性能门禁。",
+    },
+    breakpoint: {
+      name: "拐点测试",
+      description: "逐步提高 RPS 直到错误率/延迟飙升，定位系统稳定上限。",
+      header: "拐点测试 — 分阶段拉升 RPS，观察 p99 与错误率的失控点。",
+    },
+    grpc: {
+      name: "gRPC 健康检查",
+      description: "固定 RPS 的 gRPC 单次调用，针对 grpc.health.v1 服务。",
+      header: "gRPC — 使用 k6/net/grpc 的 Health/Check 接口，需要带 grpc 模块的 k6 构建。",
+    },
+    websocket: {
+      name: "WebSocket 长连接",
+      description: "维持 N 条 WebSocket 长连接，周期性收发心跳。",
+      header: "WebSocket — 100 条长连接，每 5 秒心跳一次，60 秒后自动断开。",
+    },
+    "data-driven": {
+      name: "数据驱动 (CSV + SharedArray)",
+      description: "通过 SharedArray 从 ./data/users.csv 读取数据，每个 VU 消费一份。",
+      header: "数据驱动 — papaparse 解析 CSV，SharedArray 共享给所有 VU，每人一份稳定数据。",
+    },
+  },
   ai: {
     title: "描述你的场景",
     subtitle: "自然语言 → 可运行的 k6 脚本。使用当前激活的 provider。",
