@@ -1,0 +1,39 @@
+<script setup lang="ts">
+import { onMounted } from "vue";
+import AppLayout from "@/components/AppLayout.vue";
+import ToastViewport from "@/components/ToastViewport.vue";
+import { useAppStore } from "@/stores/app";
+import { useScriptsStore } from "@/stores/scripts";
+import { useRunsStore } from "@/stores/runs";
+import { useLLMStore } from "@/stores/llm";
+import { useLocaleStore } from "@/stores/locale";
+import { useUiStore } from "@/stores/ui";
+
+const app = useAppStore();
+const scripts = useScriptsStore();
+const runs = useRunsStore();
+const llm = useLLMStore();
+const locale = useLocaleStore();
+const ui = useUiStore();
+
+onMounted(async () => {
+  ui.theme;
+  // Pull the persisted language preference (or auto-detected default) before
+  // any page renders, so the first paint is already in the right locale.
+  await locale.hydrate().catch(() => {});
+  await app.load();
+  await Promise.all([
+    scripts.refresh().catch(() => {}),
+    runs.refreshHistory().catch(() => {}),
+    runs.attach().catch(() => {}),
+    llm.hydrate().catch(() => {}),
+  ]);
+});
+</script>
+
+<template>
+  <AppLayout>
+    <router-view />
+  </AppLayout>
+  <ToastViewport />
+</template>
