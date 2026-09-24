@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref } from "vue";
+import { computed, ref, watch } from "vue";
 import { useRouter } from "vue-router";
 import { useI18n } from "vue-i18n";
 import { save as saveDialog } from "@tauri-apps/plugin-dialog";
@@ -64,11 +64,38 @@ const tokenTotals = ref<{ in: number; out: number }>({ in: 0, out: 0 });
 const iterationCount = computed(() => Math.max(0, history.value.filter((m) => m.role === "user").length));
 
 const activeProvider = computed<LlmProviderConfig>(() => llm.active);
-const providerOptions = computed(() =>
-  llm.providers.map((p) => ({
-    label: `${p.provider} · ${p.model || "(no model)"}`,
-    value: p.provider,
+
+const modelOptions = computed(() =>
+  activeProvider.value.models.map((m) => ({
+    label: m.label && m.label !== m.id ? `${m.label} (${m.id})` : m.id,
+    value: m.id,
   })),
+);
+
+const formatEndpoint: Record<string, string> = {
+  chat_completions: "/chat/completions",
+  anthropic_messages: "/v1/messages",
+  responses: "/responses",
+};
+
+const formatLabel: Record<string, string> = {
+  chat_completions: "OpenAI Chat Completions",
+  anthropic_messages: "Anthropic Messages",
+  responses: "OpenAI Responses",
+};
+
+// If the active provider changes (or the catalog is edited), and the
+// current `provider.model` no longer matches any catalog entry, snap it
+// back to the first model. Avoids stale selections after edits in
+// Settings.
+watch(
+  () => activeProvider.value.models.map((m) => m.id),
+  (ids) => {
+    if (ids.length === 0) return;
+    if (!ids.includes(activeProvider.value.model)) {
+      llm.setActiveModel(ids[0]);
+    }
+  },
 );
 
 async function generate() {
@@ -294,33 +321,53 @@ function fillExample(kind: string) {
         </CardHeader>
         <CardContent class="space-y-3">
           <div class="grid gap-2">
-            <Label>{{ t('ai.providerLabel') }}</Label>
-            <div class="flex gap-2">
-              <Select
-                class="flex-1"
-                :modelValue="llm.activeId"
-                :options="providerOptions"
-                @update:modelValue="llm.setActive($event)"
-              />
-              <Button variant="outline" size="icon" @click="router.push('/settings')" aria-label="Configure providers">
-                <Settings class="h-4 w-4" />
+            <div class="flex items-center justify-between">
+              <Label>{{ t('ai.providerLabel') }}</Label>
+              <Button
+                variant="ghost"
+                size="sm"
+                @click="router.push('/settings')"
+                aria-label="Configure providers"
+              >
+                <Settings class="h-3 w-3" /> {{ t('ai.configureProviders') }}
               </Button>
             </div>
-            <div class="flex items-center gap-2 text-xs text-muted-foreground">
-              <span>{{ activeProvider.base_url || t('ai.noModel') }}</span>
+            <div class="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
+              <span class="font-medium text-foreground">{{ activeProvider.name || t('ai.noModel') }}</span>
               <span>·</span>
-              <span>{{ t('ai.model') }}: {{ activeProvider.model || t('ai.noModel') }}</span>
-              <span v-if="!activeProvider.api_key && activeProvider.provider !== 'ollama'" class="ml-auto">
+              <code class="rounded bg-muted px-1.5 py-0.5 text-[10px]">
+                {{ formatLabel[activeProvider.api_format] }} · {{ formatEndpoint[activeProvider.api_format] }}
+              </code>
+              <span>·</span>
+              <span class="truncate">{{ activeProvider.base_url || '—' }}</span>
+              <span v-if="!activeProvider.api_key && activeProvider.base_url !== 'http://localhost:11434/v1'" class="ml-auto">
                 <Badge variant="warning">{{ t('ai.noApiKey') }}</Badge>
               </span>
             </div>
-            <Button variant="outline" size="sm" @click="testConnection" :disabled="testStatus === 'testing'">
-              <Loader2 v-if="testStatus === 'testing'" class="h-3 w-3 animate-spin" />
-              <CheckCircle2 v-else-if="testStatus === 'ok'" class="h-3 w-3 text-emerald-500" />
-              <AlertTriangle v-else-if="testStatus === 'failed'" class="h-3 w-3 text-red-500" />
-              {{ t('ai.testConnection') }}
-            </Button>
           </div>
+
+          <div class="grid gap-2">
+            <Label>{{ t('ai.modelLabel') }}</Label>
+            <div class="flex gap-2">
+              <Select
+                class="flex-1"
+                :modelValue="activeProvider.model"
+                :options="modelOptions"
+                :disabled="modelOptions.length === 0"
+                @update:modelValue="llm.setActiveModel($event)"
+              />
+            </div>
+            <p v-if="modelOptions.length === 0" class="text-xs text-muted-foreground">
+              {{ t('ai.noModelsHint') }}
+            </p>
+          </div>
+
+          <Button variant="outline" size="sm" @click="testConnection" :disabled="testStatus === 'testing'">
+            <Loader2 v-if="testStatus === 'testing'" class="h-3 w-3 animate-spin" />
+            <CheckCircle2 v-else-if="testStatus === 'ok'" class="h-3 w-3 text-emerald-500" />
+            <AlertTriangle v-else-if="testStatus === 'failed'" class="h-3 w-3 text-red-500" />
+            {{ t('ai.testConnection') }}
+          </Button>
 
           <div class="grid gap-2">
             <Label>{{ t('ai.targetBaseUrl') }}</Label>

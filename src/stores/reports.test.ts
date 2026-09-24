@@ -79,12 +79,15 @@ describe("useReportsStore", () => {
     const llm = useLLMStore();
     llm.providers = [
       {
-        provider: "openai",
+        id: "openai",
+        name: "OpenAI",
+        api_format: "chat_completions",
         base_url: "https://api.example.com/v1",
         api_key: "sk-test",
         model: "gpt-x",
         organization: null,
         temperature: 0.2,
+        models: [{ id: "gpt-x", label: "gpt-x" }],
       },
     ];
     llm.activeId = "openai";
@@ -126,12 +129,15 @@ describe("useReportsStore", () => {
     const llm = useLLMStore();
     llm.providers = [
       {
-        provider: "openai",
+        id: "openai",
+        name: "OpenAI",
+        api_format: "chat_completions",
         base_url: "https://x",
         api_key: "",
         model: "m",
         organization: null,
         temperature: 0.2,
+        models: [{ id: "m", label: "m" }],
       },
     ];
     llm.activeId = "openai";

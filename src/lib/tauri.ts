@@ -82,13 +82,29 @@ export type RunEvent =
       error: string | null;
     };
 
+export type ApiFormat = "chat_completions" | "anthropic_messages" | "responses";
+
+export interface LlmModelSpec {
+  id: string;
+  /** Optional human-readable label shown in selectors; falls back to `id`. */
+  label?: string | null;
+}
+
 export interface LlmProviderConfig {
-  provider: "openai" | "anthropic" | "ollama" | "custom";
+  /** Stable opaque id for this provider (UUID v4 generated client-side). */
+  id: string;
+  /** Display name in the settings UI. Free-form, not required to be unique. */
+  name: string;
+  /** Wire format / API family this provider speaks. */
+  api_format: ApiFormat;
   base_url: string;
   api_key: string;
+  /** Currently selected model id; must match one of `models[*].id`. */
   model: string;
   organization?: string | null;
   temperature: number;
+  /** Catalog of model ids the user can switch between for this provider. */
+  models: LlmModelSpec[];
 }
 
 export interface ScriptGenRequest {

@@ -38,7 +38,12 @@ const passedCount = computed(() => runs.history.filter((r) => r.status === "pass
 const failedCount = computed(() => runs.history.filter((r) => r.status === "failed" || r.status === "errored").length);
 const liveCount = computed(() => runs.running.length);
 const llmConfigured = computed(() =>
-  llm.providers.some((p) => p.api_key && p.api_key.length > 0 && p.provider !== "ollama"),
+  llm.providers.some(
+    (p) =>
+      p.api_key &&
+      p.api_key.length > 0 &&
+      !(p.api_format === "chat_completions" && p.base_url.includes("localhost:11434")),
+  ),
 );
 </script>
 
@@ -147,9 +152,9 @@ const llmConfigured = computed(() =>
               </Badge>
             </div>
             <div class="flex items-center justify-between">
-              <span class="flex items-center gap-2"><Globe class="h-4 w-4 text-muted-foreground" /> LLM provider</span>
+              <span class="flex items-center gap-2"><Globe class="h-4 w-4 text-muted-foreground" /> {{ llm.active.name }}</span>
               <Badge :variant="llmConfigured ? 'success' : 'warning'">
-                {{ llmConfigured ? llm.active.provider : t('dashboard.envNotConfigured') }}
+                {{ llmConfigured ? t('dashboard.envDetected') : t('dashboard.envNotConfigured') }}
               </Badge>
             </div>
             <div class="flex items-center justify-between">

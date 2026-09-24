@@ -1,19 +1,53 @@
 use crate::k6::RunOutput;
+use serde::de::Error as _;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
-/// A provider configuration as supplied by the user from the LLM Settings page.
-#[derive(Debug, Serialize, Deserialize, Clone)]
+/// API wire format the provider speaks. Determines which request/response
+/// shape the Rust dispatcher uses when calling out.
+#[derive(Debug, Serialize, Deserialize, Clone, Copy, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
+pub enum ApiFormat {
+    /// OpenAI-compatible chat completions: POST /chat/completions
+    /// (OpenAI, DeepSeek, Moonshot, OpenRouter, Ollama, vLLM, etc.)
+    ChatCompletions,
+    /// Anthropic Messages API: POST /v1/messages
+    AnthropicMessages,
+    /// OpenAI Responses API: POST /responses
+    /// (gpt-4o + Responses, vLLM Responses, etc.)
+    Responses,
+}
+
+/// A single model entry inside a provider's model catalog. The catalog
+/// lets the user keep multiple model ids around and pick which one is the
+/// active `model` for that provider without re-typing the id every time.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LlmModelSpec {
+    pub id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub label: Option<String>,
+}
+
+/// A provider configuration as supplied by the user from the LLM Settings
+/// page. Each provider carries its own catalog of models and the id of the
+/// currently selected model; everything else (key, base URL, format,
+/// temperature) is provider-wide.
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct LlmProviderConfig {
-    /// "openai" | "anthropic" | "ollama" | "custom"
-    pub provider: String,
+    /// Stable, opaque id for the provider (generated client-side on add).
+    /// Survives renames so the "active" pointer doesn't break.
+    pub id: String,
+    /// Display name shown in the settings UI. Free-form — does not have
+    /// to be unique.
+    pub name: String,
+    /// Wire format / API family this provider speaks.
+    pub api_format: ApiFormat,
     /// Base URL — e.g. https://api.openai.com/v1
     pub base_url: String,
-    /// API key (may be empty for Ollama).
+    /// API key (may be empty for local Ollama).
     #[serde(default)]
     pub api_key: String,
-    /// Model name.
+    /// Currently selected model id. Must match one of `models[*].id`.
     pub model: String,
     /// Optional organization / tenant id (for OpenAI).
     #[serde(default)]
@@ -21,10 +55,72 @@ pub struct LlmProviderConfig {
     /// Sampling temperature.
     #[serde(default = "default_temperature")]
     pub temperature: f32,
+    /// Catalog of model ids the user can switch between for this provider.
+    #[serde(default)]
+    pub models: Vec<LlmModelSpec>,
 }
 
 fn default_temperature() -> f32 {
     0.2
+}
+
+/// Migrate a legacy config (pre v0.2) into the new shape. Old configs used
+/// a `provider: "openai"|"anthropic"|"ollama"|"custom"` discriminator and a
+/// single `model` string; the new config has `id`, `name`, `api_format`,
+/// and a `models` catalog. This fn is called on hydrate so existing users
+/// don't lose their settings after the upgrade.
+pub fn migrate_provider(value: serde_json::Value) -> serde_json::Result<LlmProviderConfig> {
+    let mut obj = value
+        .as_object()
+        .cloned()
+        .ok_or_else(|| serde_json::Error::custom("expected provider object"))?;
+
+    if !obj.contains_key("api_format") {
+        let legacy = obj
+            .get("provider")
+            .and_then(|v| v.as_str())
+            .unwrap_or("custom");
+        let api_format = match legacy {
+            "anthropic" => "anthropic_messages",
+            _ => "chat_completions",
+        };
+        obj.insert(
+            "api_format".into(),
+            serde_json::Value::String(api_format.into()),
+        );
+    }
+
+    if !obj.contains_key("id") {
+        obj.insert(
+            "id".into(),
+            serde_json::Value::String(uuid::Uuid::new_v4().to_string()),
+        );
+    }
+
+    if !obj.contains_key("name") {
+        let legacy = obj
+            .get("provider")
+            .and_then(|v| v.as_str())
+            .unwrap_or("provider")
+            .to_string();
+        obj.insert("name".into(), serde_json::Value::String(legacy));
+    }
+
+    if !obj.contains_key("models") {
+        let model = obj
+            .get("model")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string();
+        let models = if !model.is_empty() {
+            vec![serde_json::json!({"id": model, "label": model})]
+        } else {
+            Vec::new()
+        };
+        obj.insert("models".into(), serde_json::Value::Array(models));
+    }
+
+    serde_json::from_value(serde_json::Value::Object(obj))
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -315,11 +411,119 @@ async fn dispatch_chat(
     provider: &LlmProviderConfig,
     messages: &[ChatMessage],
 ) -> anyhow::Result<(String, String, Option<u32>, Option<u32>)> {
-    match provider.provider.as_str() {
-        "anthropic" => anthropic_chat(provider, messages).await,
-        // OpenAI, Ollama, and any OpenAI-compatible endpoint all use the same wire.
-        _ => openai_compat_chat(provider, messages).await,
+    match provider.api_format {
+        ApiFormat::AnthropicMessages => anthropic_chat(provider, messages).await,
+        ApiFormat::Responses => responses_chat(provider, messages).await,
+        ApiFormat::ChatCompletions => openai_compat_chat(provider, messages).await,
     }
+}
+
+/// OpenAI Responses API: POST {base}/responses
+///
+/// Body: `{ "model", "input": [{role, content}], "temperature" }`.
+/// Response: `{ "output": [{ "content": [{ "text": "…" }] }], "model": …, "usage": {…} }`.
+async fn responses_chat(
+    provider: &LlmProviderConfig,
+    messages: &[ChatMessage],
+) -> anyhow::Result<(String, String, Option<u32>, Option<u32>)> {
+    let base = provider.base_url.trim_end_matches('/');
+    let url = format!("{}/responses", base);
+
+    // Flatten ChatMessage::System into the first system input item; the rest
+    // stay as user/assistant. The Responses API takes content as either a
+    // plain string or an array of typed parts; we always send strings for
+    // simplicity.
+    let mut input: Vec<serde_json::Value> = Vec::new();
+    let mut system_buf = String::new();
+    for m in messages {
+        match m {
+            ChatMessage::System { content } => {
+                if !system_buf.is_empty() {
+                    system_buf.push('\n');
+                }
+                system_buf.push_str(content);
+            }
+            ChatMessage::User { content } => {
+                if !system_buf.is_empty() {
+                    input.push(serde_json::json!({"role": "system", "content": system_buf}));
+                    system_buf.clear();
+                }
+                input.push(serde_json::json!({"role": "user", "content": content}));
+            }
+            ChatMessage::Assistant { content } => {
+                if !system_buf.is_empty() {
+                    input.push(serde_json::json!({"role": "system", "content": system_buf}));
+                    system_buf.clear();
+                }
+                input.push(serde_json::json!({"role": "assistant", "content": content}));
+            }
+        }
+    }
+    if !system_buf.is_empty() {
+        input.push(serde_json::json!({"role": "system", "content": system_buf}));
+    }
+
+    let body = serde_json::json!({
+        "model": provider.model,
+        "temperature": provider.temperature,
+        "input": input,
+    });
+
+    let client = reqwest::Client::builder()
+        .timeout(Duration::from_secs(180))
+        .build()?;
+    let mut req = client.post(&url).json(&body);
+    if !provider.api_key.is_empty() {
+        req = req.bearer_auth(&provider.api_key);
+    }
+    if let Some(org) = &provider.organization {
+        if !org.is_empty() {
+            req = req.header("OpenAI-Organization", org);
+        }
+    }
+
+    let resp = req.send().await?;
+    let status = resp.status();
+    if !status.is_success() {
+        let txt = resp.text().await.unwrap_or_default();
+        anyhow::bail!("HTTP {} from {}: {}", status, url, txt);
+    }
+    let json: serde_json::Value = resp.json().await?;
+    let model = json
+        .get("model")
+        .and_then(|v| v.as_str())
+        .unwrap_or(&provider.model)
+        .to_string();
+    // The Responses API nests the assistant text under output[*].content[*].text.
+    // Newer revisions may surface a top-level `output_text`; we accept both.
+    let content = json
+        .get("output_text")
+        .and_then(|v| v.as_str())
+        .map(|s| s.to_string())
+        .or_else(|| {
+            json.get("output")
+                .and_then(|v| v.as_array())
+                .and_then(|arr| {
+                    arr.iter().find_map(|item| {
+                        item.get("content").and_then(|c| c.as_array()).and_then(|parts| {
+                            parts.iter().find_map(|p| {
+                                p.get("text").and_then(|t| t.as_str()).map(|s| s.to_string())
+                            })
+                        })
+                    })
+                })
+        })
+        .unwrap_or_default();
+    let usage = json.get("usage");
+    let tin = usage
+        .and_then(|u| u.get("input_tokens").or_else(|| u.get("prompt_tokens")))
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32);
+    let tout = usage
+        .and_then(|u| u.get("output_tokens").or_else(|| u.get("completion_tokens")))
+        .and_then(|v| v.as_u64())
+        .map(|v| v as u32);
+    Ok((content, model, tin, tout))
 }
 
 /// OpenAI-compatible chat completions (OpenAI, DeepSeek, Moonshot, OpenRouter, Ollama, custom...).
@@ -647,6 +851,84 @@ mod tests {
         let (script, explanation) = extract_script_and_explanation(s);
         assert!(script.contains("http.get"));
         assert!(explanation.unwrap_or_default().contains("Here"));
+    }
+
+    #[test]
+    fn migrate_provider_openai_legacy() {
+        let legacy = serde_json::json!({
+            "provider": "openai",
+            "base_url": "https://api.openai.com/v1",
+            "api_key": "sk-test",
+            "model": "gpt-4o-mini",
+            "organization": null,
+            "temperature": 0.2,
+        });
+        let migrated = migrate_provider(legacy).expect("migrate");
+        assert_eq!(migrated.api_format, ApiFormat::ChatCompletions);
+        assert_eq!(migrated.name, "openai");
+        assert_eq!(migrated.base_url, "https://api.openai.com/v1");
+        assert_eq!(migrated.model, "gpt-4o-mini");
+        assert_eq!(migrated.models.len(), 1);
+        assert_eq!(migrated.models[0].id, "gpt-4o-mini");
+        assert!(!migrated.id.is_empty(), "id should be generated");
+    }
+
+    #[test]
+    fn migrate_provider_anthropic_legacy_picks_messages_api() {
+        let legacy = serde_json::json!({
+            "provider": "anthropic",
+            "base_url": "https://api.anthropic.com",
+            "api_key": "sk-ant",
+            "model": "claude-3-5-sonnet-latest",
+            "temperature": 0.3,
+        });
+        let migrated = migrate_provider(legacy).expect("migrate");
+        assert_eq!(migrated.api_format, ApiFormat::AnthropicMessages);
+    }
+
+    #[test]
+    fn migrate_provider_preserves_existing_id_and_format() {
+        // Already-migrated configs pass through untouched.
+        let modern = serde_json::json!({
+            "id": "fixed-id",
+            "name": "my-proxy",
+            "api_format": "responses",
+            "base_url": "https://proxy.local/v1",
+            "api_key": "",
+            "model": "gpt-4o",
+            "organization": null,
+            "temperature": 0.1,
+            "models": [{"id": "gpt-4o"}, {"id": "gpt-4o-mini", "label": "Mini"}],
+        });
+        let migrated = migrate_provider(modern).expect("migrate");
+        assert_eq!(migrated.id, "fixed-id");
+        assert_eq!(migrated.api_format, ApiFormat::Responses);
+        assert_eq!(migrated.models.len(), 2);
+        assert_eq!(migrated.models[1].label.as_deref(), Some("Mini"));
+    }
+
+    #[test]
+    fn migrate_provider_handles_missing_model() {
+        let legacy = serde_json::json!({
+            "provider": "ollama",
+            "base_url": "http://localhost:11434/v1",
+            "api_key": "",
+            "model": "",
+            "temperature": 0.2,
+        });
+        let migrated = migrate_provider(legacy).expect("migrate");
+        assert!(migrated.models.is_empty());
+        assert_eq!(migrated.api_format, ApiFormat::ChatCompletions);
+    }
+
+    #[test]
+    fn api_format_serializes_as_snake_case() {
+        let v = serde_json::to_string(&ApiFormat::AnthropicMessages).unwrap();
+        assert_eq!(v, "\"anthropic_messages\"");
+        let v = serde_json::to_string(&ApiFormat::Responses).unwrap();
+        assert_eq!(v, "\"responses\"");
+        let v = serde_json::to_string(&ApiFormat::ChatCompletions).unwrap();
+        assert_eq!(v, "\"chat_completions\"");
     }
 
     #[test]
