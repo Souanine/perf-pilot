@@ -116,6 +116,26 @@ export interface ChatMessage {
   content: string;
 }
 
+export interface ReportGenRequest {
+  run_id: string;
+  locale?: string;
+}
+
+export interface ReportGenResponse {
+  report: string;
+  model: string;
+  tokens_in: number | null;
+  tokens_out: number | null;
+}
+
+export interface ReportRecord {
+  run_id: string;
+  path: string;
+  model: string | null;
+  created_at: string;
+  size: number;
+}
+
 // Commands
 export const api = {
   getAppInfo: () => invoke<AppInfo>("get_app_info"),
@@ -146,6 +166,17 @@ export const api = {
     }),
   testLlm: (provider: LlmProviderConfig) =>
     invoke<LlmTestResult>("test_llm", { provider }),
+  generateReport: (
+    provider: LlmProviderConfig,
+    request: ReportGenRequest,
+  ) =>
+    invoke<ReportGenResponse>("generate_report", {
+      provider,
+      request,
+    }),
+  listReports: () => invoke<ReportRecord[]>("list_reports"),
+  readReport: (runId: string) => invoke<string>("read_report", { runId }),
+  deleteReport: (runId: string) => invoke<void>("delete_report", { runId }),
 };
 
 // Events

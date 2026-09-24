@@ -2,12 +2,12 @@ import { defineStore } from "pinia";
 import { computed, ref } from "vue";
 import {
   api,
-  onK6Event,
   type RunEvent,
   type RunOptions,
   type RunOutput,
   type RunRecord,
 } from "@/lib/tauri";
+import { stream } from "@/lib/k6-event-stream";
 
 export interface LiveRun {
   run_id: string;
@@ -34,12 +34,50 @@ function genId() {
   );
 }
 
+/** Apply a single event to its live run row. Extracted so `start()` can
+ *  replay buffered events with the exact same logic the live handler uses. */
+function applyEventToLive(run: LiveRun, ev: RunEvent) {
+  switch (ev.kind) {
+    case "started":
+      run.started_at = ev.started_at;
+      run.command = ev.command;
+      run.k6_version = ev.k6_version;
+      break;
+    case "stdout":
+      run.stdout_lines.push(ev.line);
+      break;
+    case "stderr":
+      run.stderr_lines.push(ev.line);
+      break;
+    case "metric":
+      run.metrics[ev.metric.name] = ev.metric.value;
+      break;
+    case "finished":
+      run.finished_at = ev.finished_at;
+      run.exit_code = ev.exit_code;
+      run.status = ev.status;
+      run.error = ev.error;
+      break;
+  }
+}
+
 export const useRunsStore = defineStore("runs", () => {
   const history = ref<RunRecord[]>([]);
   const live = ref<Record<string, LiveRun>>({});
   const selectedHistoryId = ref<string | null>(null);
   const detailCache = ref<Record<string, RunOutput>>({});
-  let unsub: (() => void) | null = null;
+
+  // Register the store's routing function with the global stream. Re-runs of
+  // the Pinia setup function (e.g. in tests that reset Pinia) just overwrite
+  // the previous handler, which is what we want — only one router per app.
+  stream.onEvent((ev) => {
+    const run = live.value[ev.run_id];
+    if (!run) return;
+    applyEventToLive(run, ev);
+    if (ev.kind === "finished") {
+      refreshHistory().catch(() => {});
+    }
+  });
 
   async function refreshHistory() {
     history.value = await api.listRuns();
@@ -68,48 +106,9 @@ export const useRunsStore = defineStore("runs", () => {
     }
   }
 
-  async function attach() {
-    if (unsub) return;
-    unsub = await onK6Event((ev: RunEvent) => {
-      const id = ev.run_id;
-      if (!live.value[id]) return;
-      switch (ev.kind) {
-        case "started":
-          live.value[id].started_at = ev.started_at;
-          live.value[id].command = ev.command;
-          live.value[id].k6_version = ev.k6_version;
-          break;
-        case "stdout":
-          live.value[id].stdout_lines.push(ev.line);
-          break;
-        case "stderr":
-          live.value[id].stderr_lines.push(ev.line);
-          break;
-        case "metric":
-          live.value[id].metrics[ev.metric.name] = ev.metric.value;
-          break;
-        case "finished":
-          live.value[id].finished_at = ev.finished_at;
-          live.value[id].exit_code = ev.exit_code;
-          live.value[id].status = ev.status;
-          live.value[id].error = ev.error;
-          // Refresh history asynchronously
-          refreshHistory().catch(() => {});
-          break;
-      }
-    });
-  }
-
-  function detach() {
-    if (unsub) {
-      unsub();
-      unsub = null;
-    }
-  }
-
   async function start(scriptPath: string, options: RunOptions): Promise<string> {
     const id = genId();
-    live.value[id] = {
+    const fresh: LiveRun = {
       run_id: id,
       script_path: scriptPath,
       options,
@@ -122,12 +121,20 @@ export const useRunsStore = defineStore("runs", () => {
       metrics: {},
       command: [],
     };
-    await attach();
+    live.value[id] = fresh;
+
+    // Drain any events Rust already emitted for this runId (e.g. a synchronous
+    // `Started` that landed before we created the row). The stream buffers
+    // those; replaying synchronously here closes the race.
+    for (const ev of stream.takeBuffered(id)) {
+      applyEventToLive(fresh, ev);
+    }
+
     try {
       await api.runK6(id, scriptPath, options);
       return id;
     } catch (e) {
-      // Roll back the optimistic entry so the UI doesn't show a phantom "running" run.
+      // Roll back the optimistic entry so the UI doesn't show a phantom run.
       const liveRun = live.value[id];
       if (liveRun) {
         liveRun.status = "errored";
@@ -158,7 +165,5 @@ export const useRunsStore = defineStore("runs", () => {
     removeRun,
     start,
     stop,
-    attach,
-    detach,
   };
 });

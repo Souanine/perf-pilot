@@ -42,11 +42,25 @@ describe("i18n module", () => {
       "runs",
       "history",
       "settings",
+      "report",
     ];
     for (const s of sections) {
       const v = tForLocale("zh-CN", s);
       expect(typeof v, `section ${s} should resolve in zh-CN`).toBe("string");
       expect(v.length, `section ${s} in zh-CN should not be empty`).toBeGreaterThan(0);
     }
+  });
+
+  it("report section keys exist in both locales", () => {
+    expect(tForLocale("en", "report.title")).toBe("Performance Report");
+    expect(tForLocale("zh-CN", "report.title")).toBe("性能报告");
+    expect(tForLocale("en", "report.generate")).toBe("Generate report");
+    expect(tForLocale("zh-CN", "report.generate")).toBe("生成报告");
+    expect(tForLocale("en", "report.regenerate")).toBe("Regenerate report");
+    expect(tForLocale("zh-CN", "report.regenerate")).toBe("重新生成报告");
+    expect(tForLocale("en", "report.download")).toBe("Download .md");
+    expect(tForLocale("zh-CN", "report.download")).toBe("下载 .md");
+    expect(tForLocale("en", "report.empty")).toContain("Generate");
+    expect(tForLocale("zh-CN", "report.empty")).toContain("生成");
   });
 });

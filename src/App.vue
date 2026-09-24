@@ -8,6 +8,7 @@ import { useRunsStore } from "@/stores/runs";
 import { useLLMStore } from "@/stores/llm";
 import { useLocaleStore } from "@/stores/locale";
 import { useUiStore } from "@/stores/ui";
+import { stream as k6Stream } from "@/lib/k6-event-stream";
 
 const app = useAppStore();
 const scripts = useScriptsStore();
@@ -25,7 +26,7 @@ onMounted(async () => {
   await Promise.all([
     scripts.refresh().catch(() => {}),
     runs.refreshHistory().catch(() => {}),
-    runs.attach().catch(() => {}),
+    k6Stream.attach().catch(() => {}),
     llm.hydrate().catch(() => {}),
   ]);
 });

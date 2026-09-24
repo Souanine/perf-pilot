@@ -9,7 +9,7 @@ pub mod llm;
 pub mod settings;
 
 use k6::{K6Info, K6Runner, RunOptions, RunOutput};
-use llm::{ChatMessage, LlmProviderConfig, ScriptGenRequest, ScriptGenResponse};
+use llm::{ChatMessage, LlmProviderConfig, ReportGenRequest, ReportGenResponse, ScriptGenRequest, ScriptGenResponse};
 
 /// Shared application state.
 pub struct AppState {
@@ -78,21 +78,33 @@ async fn run_k6(
     script_path: String,
     options: RunOptions,
 ) -> Result<String, String> {
-    let runner = K6Runner::new(run_id.clone(), script_path, options);
-    {
-        let mut runners = state.runners.lock().await;
-        runners.push(runner);
-    }
-    // Spawn the runner outside the lock; spawn reads state from the
-    // runner by re-acquiring the lock briefly via its async API.
     let runners_ref = state.runners.clone();
     let last_idx = {
-        let runners = runners_ref.lock().await;
-        runners.len().saturating_sub(1)
+        let mut guard = runners_ref.lock().await;
+        guard.push(K6Runner::new(run_id.clone(), script_path, options));
+        guard.len() - 1
     };
-    K6Runner::spawn(runners_ref, last_idx, window)
-        .await
-        .map_err(|e| e.to_string())?;
+
+    // Phase 1: prepare. On failure, drop the placeholder we just pushed and
+    // surface the error to the caller.
+    let prepared = match K6Runner::prepare_run(runners_ref.clone(), last_idx, window.clone()).await
+    {
+        Ok(p) => p,
+        Err(e) => {
+            runners_ref.lock().await.retain(|r| r.run_id != run_id);
+            return Err(e);
+        }
+    };
+
+    // Phase 2 + 3 run in the background. We hand the prepared child over to
+    // stream_run and persist via conclude_run when k6 exits.
+    let app_handle = window.app_handle().clone();
+    let run_id_inner = run_id.clone();
+    tauri::async_runtime::spawn(async move {
+        let conclusion = K6Runner::stream_run(prepared, window).await;
+        K6Runner::conclude_run(&app_handle, runners_ref, &run_id_inner, conclusion).await;
+    });
+
     Ok(run_id)
 }
 
@@ -140,6 +152,56 @@ async fn test_llm(provider: LlmProviderConfig) -> Result<llm::LlmTestResult, Str
         .map_err(|e| e.to_string())
 }
 
+#[tauri::command]
+async fn generate_report(
+    app_handle: tauri::AppHandle,
+    provider: LlmProviderConfig,
+    request: ReportGenRequest,
+) -> Result<ReportGenResponse, String> {
+    // Load the run snapshot from disk so we don't depend on the frontend
+    // shipping metrics / error / timestamps through the IPC payload.
+    let run = fs::load_run_output(&app_handle, &request.run_id)
+        .map_err(|e| format!("Run {} not found: {}", request.run_id, e))?;
+    let locale = request.locale.as_deref().unwrap_or("en");
+    let resp = llm::generate_report(&provider, &run, locale)
+        .await
+        .map_err(|e| e.to_string())?;
+
+    // Persist the report next to the run, so the History page can find it
+    // without re-calling the LLM.
+    fs::write_report(&app_handle, &request.run_id, &resp.report, Some(&resp.model))
+        .map_err(|e| e.to_string())?;
+
+    Ok(resp)
+}
+
+#[tauri::command]
+async fn list_reports(app_handle: tauri::AppHandle) -> Result<Vec<fs::ReportRecord>, String> {
+    fs::list_reports(&app_handle).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn read_report(app_handle: tauri::AppHandle, run_id: String) -> Result<String, String> {
+    fs::read_report(&app_handle, &run_id).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn delete_report(app_handle: tauri::AppHandle, run_id: String) -> Result<(), String> {
+    let path = fs::reports_dir(&app_handle)
+        .map_err(|e| e.to_string())?
+        .join(format!("{}.md", run_id));
+    if path.exists() {
+        std::fs::remove_file(&path).map_err(|e| e.to_string())?;
+    }
+    let meta = fs::reports_dir(&app_handle)
+        .map_err(|e| e.to_string())?
+        .join(format!("{}.meta.json", run_id));
+    if meta.exists() {
+        let _ = std::fs::remove_file(&meta);
+    }
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -152,6 +214,7 @@ pub fn run() {
         .setup(|app| {
             // Ensure data dirs exist on startup.
             let _ = fs::ensure_dirs(&app.handle());
+            let _ = fs::ensure_reports_dir(&app.handle());
             app.manage(AppState {
                 runners: Arc::new(Mutex::new(Vec::new())),
             });
@@ -171,6 +234,10 @@ pub fn run() {
             delete_run,
             generate_script,
             test_llm,
+            generate_report,
+            list_reports,
+            read_report,
+            delete_report,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

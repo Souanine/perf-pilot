@@ -1,3 +1,4 @@
+use crate::k6::RunOutput;
 use serde::{Deserialize, Serialize};
 use std::time::Duration;
 
@@ -60,6 +61,27 @@ pub struct LlmTestResult {
     pub ok: bool,
     pub message: String,
     pub model: Option<String>,
+}
+
+/// User request to generate a markdown performance report from a completed run.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ReportGenRequest {
+    /// The k6 run whose results should be analyzed.
+    pub run_id: String,
+    /// BCP-47-ish locale code ("en", "zh-CN") — the report should be written
+    /// in this language when possible.
+    #[serde(default)]
+    pub locale: Option<String>,
+}
+
+/// Response from the LLM after generating a report.
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct ReportGenResponse {
+    /// The final, cleaned markdown report body.
+    pub report: String,
+    pub model: String,
+    pub tokens_in: Option<u32>,
+    pub tokens_out: Option<u32>,
 }
 
 /// Top-level: generate a k6 script from a natural-language description.
@@ -128,6 +150,164 @@ pub async fn test_provider(provider: &LlmProviderConfig) -> anyhow::Result<LlmTe
             model: None,
         }),
     }
+}
+
+/// Top-level: generate a markdown performance report from a completed run.
+///
+/// The LLM is given a structured prompt with the run's metadata, summary
+/// metrics, and the tail of stdout/stderr. It must respond with a single
+/// fenced ```markdown``` block that we extract and sanitize.
+pub async fn generate_report(
+    provider: &LlmProviderConfig,
+    run: &RunOutput,
+    locale: &str,
+) -> anyhow::Result<ReportGenResponse> {
+    let prompt = build_report_user_prompt(run);
+    let system = build_report_system_prompt(locale);
+
+    let messages = vec![
+        ChatMessage::System { content: system },
+        ChatMessage::User { content: prompt },
+    ];
+
+    let (text, model, tin, tout) = dispatch_chat(provider, &messages).await?;
+    let report = extract_markdown(&text);
+
+    Ok(ReportGenResponse {
+        report,
+        model,
+        tokens_in: tin,
+        tokens_out: tout,
+    })
+}
+
+/// System prompt for the report-generation LLM call.
+fn build_report_system_prompt(locale: &str) -> String {
+    let language_directive = match locale {
+        "zh" | "zh-CN" | "zh-Hans" | "zh-Hans-CN" => {
+            " Write the entire report in 简体中文 (Simplified Chinese)."
+        }
+        _ => " Write the entire report in English.",
+    };
+
+    format!(
+        r#"You are PerfPilot Reporter, an expert k6 / load-testing analyst. \
+You receive the structured output of a completed k6 run and produce a concise, \
+actionable Markdown performance report for engineers.{language_directive}
+
+Rules:
+1. Output MUST be a single, complete Markdown document wrapped in a ```markdown \
+fenced code block. Nothing else — no preamble, no postscript.
+2. Use these top-level sections in order (omit a section only if the data is \
+missing):
+   - `# Performance Report` — title with the run label / script filename.
+   - `## Executive Summary` — 3-5 sentences: pass/fail verdict, headline \
+metrics, biggest risk. Plain language, no buzzwords.
+   - `## Key Metrics` — a Markdown table with at least: HTTP request count, \
+average duration, p(95) duration, p(99) duration (if present), error rate, \
+throughput (req/s), data received, iteration count.
+   - `## Bottlenecks & Risks` — bullet list calling out concrete issues \
+(high p95/p99, threshold breach, error rate, slow endpoint). Quote the metric \
+value that backs each claim.
+   - `## Recommendations` — numbered list of concrete next steps. Each step \
+should be small enough to act on in one PR.
+   - `## Threshold Verdict` — one-line PASS/FAIL per threshold observed in the \
+raw output, with the threshold text quoted.
+3. Numbers must come from the input. Do not invent metrics. If a value is \
+missing, write `n/a` instead of guessing.
+4. Keep the report under 600 words. Be specific, not generic. \
+Cite metric values inline (e.g. "p(95) = 412ms" vs "high latency")."#
+    )
+}
+
+/// Construct the user-side prompt: a compact summary of the run the LLM
+/// has to analyze. We send the raw k6 summary tail (the lines after
+/// `scenarios'`) so the model can quote thresholds and group metrics without
+/// us having to re-parse them.
+fn build_report_user_prompt(run: &RunOutput) -> String {
+    let mut s = String::new();
+    s.push_str("Analyze this completed k6 run and produce the Markdown report.\n\n");
+
+    s.push_str("## Run metadata\n");
+    s.push_str(&format!("- Run ID: `{}`\n", run.run_id));
+    if let Some(label) = &run.label {
+        if !label.trim().is_empty() {
+            s.push_str(&format!("- Label: {}\n", label));
+        }
+    }
+    s.push_str(&format!("- Script: `{}`\n", run.script_path));
+    s.push_str(&format!("- Status: `{}`\n", run.status));
+    s.push_str(&format!(
+        "- Exit code: `{}`\n",
+        run.exit_code.map(|c| c.to_string()).unwrap_or_else(|| "—".to_string())
+    ));
+    s.push_str(&format!("- Started: {}\n", run.started_at.to_rfc3339()));
+    if let Some(f) = run.finished_at {
+        s.push_str(&format!("- Finished: {}\n", f.to_rfc3339()));
+    }
+    if let Some(err) = &run.error {
+        if !err.trim().is_empty() {
+            s.push_str(&format!("- Error: {}\n", err));
+        }
+    }
+    s.push('\n');
+
+    if !run.metrics.is_empty() {
+        s.push_str("## Parsed summary metrics\n");
+        for m in &run.metrics {
+            s.push_str(&format!("- `{}` = `{}`\n", m.name, m.value));
+        }
+        s.push('\n');
+    }
+
+    let stdout_tail = tail_lines(&run.stdout, 80);
+    if !stdout_tail.trim().is_empty() {
+        s.push_str("## Raw k6 summary (tail of stdout)\n");
+        s.push_str("```text\n");
+        s.push_str(stdout_tail.trim_end());
+        s.push_str("\n```\n\n");
+    }
+
+    let stderr_tail = tail_lines(&run.stderr, 40);
+    if !stderr_tail.trim().is_empty() {
+        s.push_str("## Raw k6 stderr (tail)\n");
+        s.push_str("```text\n");
+        s.push_str(stderr_tail.trim_end());
+        s.push_str("\n```\n\n");
+    }
+
+    s.push_str("Now produce the Markdown report per the system instructions.");
+    s
+}
+
+/// Take the last `n` lines of `text`, prefixing with a marker so the LLM
+/// knows the output was truncated.
+fn tail_lines(text: &str, n: usize) -> String {
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.len() <= n {
+        return text.to_string();
+    }
+    let start = lines.len() - n;
+    let mut out = String::new();
+    out.push_str(&format!("[... {} earlier lines truncated ...]\n", start));
+    for line in &lines[start..] {
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
+/// Extract the first fenced ```markdown``` (or generic) block from the LLM
+/// response. Falls back to the raw text if no fence is present.
+fn extract_markdown(text: &str) -> String {
+    // Reuse the script fence extractor — it handles both properly fenced and
+    // unterminated LLM responses the same way, and it's the same kind of
+    // "recover the actual artifact from chat noise" job.
+    let (body, _explanation) = extract_script_and_explanation(text);
+    // Treat the extracted body as markdown. If the LLM produced a non-fenced
+    // response (extract_script_and_explanation falls back to the whole text),
+    // we still get a valid report out the other end.
+    body.trim().to_string()
 }
 
 /// Dispatch a chat completion to the appropriate provider implementation.
@@ -337,6 +517,8 @@ fn extract_script_and_explanation(text: &str) -> (String, Option<String>) {
             || info == "javascript"
             || info == "ts"
             || info == "typescript"
+            || info == "md"
+            || info == "markdown"
             || (info.is_empty() && script.is_none());
 
         // Read body up to a closing ```, an isolated stray backtick on its
@@ -483,5 +665,107 @@ mod tests {
         let s = "```javascript\nconsole.log('a');\n```\n`";
         let (script, _) = extract_script_and_explanation(s);
         assert_eq!(script, "console.log('a');");
+    }
+
+    fn dummy_run() -> RunOutput {
+        RunOutput {
+            run_id: "r-test-1".to_string(),
+            script_path: "/tmp/smoke.js".to_string(),
+            label: Some("smoke".to_string()),
+            started_at: chrono::Utc::now(),
+            finished_at: Some(chrono::Utc::now()),
+            exit_code: Some(0),
+            status: "passed".to_string(),
+            stdout: "running (30s), 50/50 VUs\nhttp_req_duration..............: avg=120ms min=80ms med=110ms max=300ms p(90)=180ms p(95)=210ms\nhttp_reqs......................: 532 53.2/s".to_string(),
+            stderr: "".to_string(),
+            metrics: vec![
+                crate::k6::MetricSummary { name: "http_req_duration".into(), value: "120ms".into(), unit: Some("ms".into()) },
+                crate::k6::MetricSummary { name: "http_reqs".into(), value: "532".into(), unit: None },
+            ],
+            error: None,
+        }
+    }
+
+    #[test]
+    fn report_user_prompt_includes_metrics_and_tail() {
+        let run = dummy_run();
+        let prompt = build_report_user_prompt(&run);
+        assert!(prompt.contains("r-test-1"));
+        assert!(prompt.contains("smoke"));
+        assert!(prompt.contains("http_req_duration"));
+        assert!(prompt.contains("http_reqs"));
+        assert!(prompt.contains("http_req_duration.............."));
+        assert!(prompt.contains("Now produce the Markdown report"));
+    }
+
+    #[test]
+    fn report_user_prompt_handles_missing_optional_fields() {
+        let mut run = dummy_run();
+        run.label = None;
+        run.error = None;
+        run.metrics.clear();
+        run.finished_at = None;
+        run.exit_code = None;
+        run.stderr = "".into();
+        run.stdout = "".into();
+        let prompt = build_report_user_prompt(&run);
+        assert!(prompt.contains("Run ID: `r-test-1`"));
+        assert!(!prompt.contains("Label:"));
+        assert!(!prompt.contains("Error:"));
+        assert!(!prompt.contains("Parsed summary metrics"));
+        assert!(!prompt.contains("Raw k6 summary"));
+        assert!(!prompt.contains("Raw k6 stderr"));
+    }
+
+    #[test]
+    fn report_system_prompt_directs_language() {
+        let en = build_report_system_prompt("en");
+        assert!(en.contains("English"), "en prompt should require English: {}", en);
+        assert!(!en.contains("Simplified Chinese"), "en prompt must not require Chinese");
+
+        let zh = build_report_system_prompt("zh-CN");
+        assert!(zh.contains("简体中文"), "zh prompt should require Chinese: {}", zh);
+        assert!(!zh.contains("Write the entire report in English."));
+    }
+
+    #[test]
+    fn report_system_prompt_default_is_english() {
+        // Unknown locale falls back to English so we don't ship bilingual mush.
+        let s = build_report_system_prompt("fr-FR");
+        assert!(s.contains("English"));
+    }
+
+    #[test]
+    fn tail_lines_returns_full_text_when_short() {
+        let s = "a\nb\nc";
+        assert_eq!(tail_lines(s, 10), "a\nb\nc");
+    }
+
+    #[test]
+    fn tail_lines_truncates_with_marker() {
+        let s = (1..=20).map(|i| format!("line {}", i)).collect::<Vec<_>>().join("\n");
+        let t = tail_lines(&s, 3);
+        assert!(t.contains("earlier lines truncated"));
+        assert!(t.contains("line 18"));
+        assert!(t.contains("line 20"));
+        assert!(!t.contains("line 1\n"));
+    }
+
+    #[test]
+    fn extract_markdown_recovers_fenced_block() {
+        let s = "```markdown\n# Hello\n\nWorld\n```";
+        assert_eq!(extract_markdown(s), "# Hello\n\nWorld");
+    }
+
+    #[test]
+    fn extract_markdown_falls_back_to_raw_text() {
+        let s = "# Just a heading\n\nNo fence here.";
+        assert_eq!(extract_markdown(s), "# Just a heading\n\nNo fence here.");
+    }
+
+    #[test]
+    fn extract_markdown_strips_stray_trailing_fence() {
+        let s = "```markdown\n# Hello\n```\n`";
+        assert_eq!(extract_markdown(s), "# Hello");
     }
 }

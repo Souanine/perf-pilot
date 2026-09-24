@@ -13,15 +13,33 @@ import Badge from "@/components/ui/Badge.vue";
 import Button from "@/components/ui/Button.vue";
 import ScrollArea from "@/components/ui/ScrollArea.vue";
 import Input from "@/components/ui/Input.vue";
+import MarkdownView from "@/components/MarkdownView.vue";
 import { useRunsStore } from "@/stores/runs";
 import { useToastStore } from "@/stores/toast";
-import { formatDuration, relativeTime, runToMarkdown } from "@/lib/utils";
-import { Search, ListChecks, AlertCircle, Clock, Download, Trash2 } from "lucide-vue-next";
+import { useReportsStore } from "@/stores/reports";
+import { useLLMStore } from "@/stores/llm";
+import { formatBytes, formatDuration, relativeTime, runToMarkdown } from "@/lib/utils";
+import {
+  Search,
+  ListChecks,
+  AlertCircle,
+  Clock,
+  Download,
+  Trash2,
+  Sparkles,
+  Loader2,
+  Eye,
+  FileText,
+} from "lucide-vue-next";
 
 const runs = useRunsStore();
 const route = useRoute();
 const toast = useToastStore();
+const reports = useReportsStore();
+const llm = useLLMStore();
 const { t } = useI18n();
+
+const showReportRaw = ref(false);
 
 const filter = ref("");
 const detail = ref<RunOutput | null>(null);
@@ -58,6 +76,17 @@ function statusBadge(s: string) {
 async function loadDetail(id: string) {
   selectedId.value = id;
   detail.value = await runs.loadDetail(id);
+  // If the report index hasn't been refreshed yet (e.g. first visit to the
+  // page), do it now so the per-run report entry is available.
+  if (Object.keys(reports.index).length === 0) {
+    await reports.refresh();
+  }
+  // Lazy-load the report body if a report exists for this run but isn't
+  // cached yet — without this the viewer would show the empty hint even
+  // though the file is on disk.
+  if (reports.forRun(id) && !reports.forRun(id)?.body) {
+    await reports.load(id);
+  }
 }
 
 watch(
@@ -123,8 +152,90 @@ async function confirmDelete() {
   toast.push({ title: "Run deleted", description: removedId, variant: "warning" });
 }
 
+const currentReport = computed(() =>
+  detail.value ? reports.forRun(detail.value.run_id) : null,
+);
+const isGeneratingCurrent = computed(() =>
+  detail.value ? reports.isGenerating(detail.value.run_id) : false,
+);
+const currentError = computed(() =>
+  detail.value ? reports.errorFor(detail.value.run_id) : null,
+);
+
+async function generateReport() {
+  if (!detail.value) return;
+  if (!llm.active?.model) {
+    toast.push({
+      title: t('report.error'),
+      description: t('ai.pickModel'),
+      variant: "warning",
+    });
+    return;
+  }
+  const resp = await reports.generate(detail.value.run_id);
+  if (resp) {
+    toast.push({
+      title: t('report.title'),
+      description: `${resp.model} · ${t('report.tokensFormat', { tin: resp.tokens_in ?? "?", tout: resp.tokens_out ?? "?" })}`,
+      variant: "success",
+    });
+  } else if (currentError.value) {
+    toast.push({
+      title: t('report.error'),
+      description: currentError.value,
+      variant: "destructive",
+    });
+  }
+}
+
+async function downloadReport() {
+  const entry = currentReport.value;
+  if (!entry?.body || !detail.value) return;
+  const label = detail.value.label || detail.value.script_path.split(/[\\/]/).pop() || "run";
+  const safe = label.replace(/[\\/:*?"<>|]/g, "_");
+  const target = await saveDialog({
+    defaultPath: `perf-pilot-report-${safe}-${detail.value.run_id}.md`,
+    filters: [{ name: "Markdown", extensions: ["md"] }],
+  });
+  if (!target) return;
+  try {
+    const { writeTextFile } = await import("@tauri-apps/plugin-fs");
+    await writeTextFile(target, entry.body);
+    toast.push({
+      title: t('report.download'),
+      description: target,
+      variant: "success",
+    });
+  } catch (e: unknown) {
+    toast.push({
+      title: t('report.download') + ' failed',
+      description: e instanceof Error ? e.message : String(e),
+      variant: "destructive",
+    });
+  }
+}
+
+async function discardReport() {
+  const entry = currentReport.value;
+  if (!entry || !detail.value) return;
+  const yes = await askDialog(
+    t('report.delete') + '?',
+    { title: t('report.delete'), kind: "warning" },
+  );
+  if (!yes) return;
+  await reports.discard(detail.value.run_id);
+  toast.push({
+    title: t('report.delete'),
+    description: detail.value.run_id,
+    variant: "warning",
+  });
+}
+
 onMounted(async () => {
-  await runs.refreshHistory();
+  await Promise.all([
+    runs.refreshHistory(),
+    reports.refresh(),
+  ]);
   if (selectedId.value && !detail.value) {
     await loadDetail(selectedId.value);
   } else if (!selectedId.value && filtered.value.length) {
@@ -192,6 +303,82 @@ onMounted(async () => {
             </Button>
           </div>
         </div>
+
+        <!-- Performance Report (LLM-generated markdown analysis) -->
+        <Card class="mb-3 border-primary/20 bg-primary/5">
+          <CardHeader class="flex flex-row items-center justify-between gap-2 border-b border-border py-3">
+            <CardTitle class="flex items-center gap-2 text-base">
+              <Sparkles class="h-4 w-4 text-primary" /> {{ t('report.title') }}
+            </CardTitle>
+            <div class="flex items-center gap-2">
+              <Button
+                v-if="!currentReport && !isGeneratingCurrent"
+                size="sm"
+                @click="generateReport"
+              >
+                <Sparkles class="h-3 w-3" /> {{ t('report.generate') }}
+              </Button>
+              <Button
+                v-if="currentReport && !isGeneratingCurrent"
+                size="sm"
+                variant="outline"
+                @click="generateReport"
+              >
+                <Sparkles class="h-3 w-3" /> {{ t('report.regenerate') }}
+              </Button>
+              <Button
+                v-if="currentReport && !isGeneratingCurrent"
+                size="sm"
+                variant="outline"
+                @click="showReportRaw = !showReportRaw"
+                :aria-pressed="showReportRaw"
+              >
+                <Eye class="h-3 w-3" /> {{ t('report.rawToggle') }}
+              </Button>
+              <Button
+                v-if="currentReport && !isGeneratingCurrent"
+                size="sm"
+                variant="outline"
+                @click="downloadReport"
+              >
+                <FileText class="h-3 w-3" /> {{ t('report.download') }}
+              </Button>
+              <Button
+                v-if="currentReport && !isGeneratingCurrent"
+                size="sm"
+                variant="ghost"
+                class="text-destructive"
+                @click="discardReport"
+              >
+                <Trash2 class="h-3 w-3" /> {{ t('report.delete') }}
+              </Button>
+            </div>
+          </CardHeader>
+          <CardContent class="p-0">
+            <div v-if="isGeneratingCurrent" class="flex items-center gap-2 p-4 text-sm text-muted-foreground">
+              <Loader2 class="h-4 w-4 animate-spin" /> {{ t('report.generating') }}
+            </div>
+            <div v-else-if="currentError" class="border-t border-destructive/30 bg-destructive/5 p-3 text-xs text-destructive">
+              {{ t('report.error') }}: {{ currentError }}
+            </div>
+            <div v-else-if="currentReport">
+              <div class="flex flex-wrap items-center gap-3 border-b border-border bg-card/40 px-4 py-2 text-xs text-muted-foreground">
+                <Badge variant="info">{{ t('report.model') }}: {{ currentReport.model || '—' }}</Badge>
+                <span>{{ t('report.createdAt') }}: {{ relativeTime(currentReport.created_at) }}</span>
+                <span>{{ t('report.size') }}: {{ formatBytes(currentReport.size) }}</span>
+              </div>
+              <ScrollArea v-if="!showReportRaw" class="max-h-[640px] p-4">
+                <MarkdownView :source="currentReport.body ?? ''" />
+              </ScrollArea>
+              <ScrollArea v-else class="max-h-[640px] bg-zinc-950 p-3 font-mono text-xs leading-relaxed text-emerald-100">
+                <pre>{{ currentReport.body }}</pre>
+              </ScrollArea>
+            </div>
+            <div v-else class="p-4 text-sm text-muted-foreground">
+              {{ t('report.empty') }}
+            </div>
+          </CardContent>
+        </Card>
 
         <Card v-if="detail.error" class="mb-3 border-destructive/40 bg-destructive/5">
           <CardContent class="flex items-start gap-2 p-3 text-sm text-destructive">

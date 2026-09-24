@@ -2,10 +2,12 @@ use crate::fs;
 use chrono::{DateTime, Utc};
 use regex::Regex;
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::process::Stdio;
-use tauri::{Emitter, Manager};
+use std::sync::{Arc, Mutex as StdMutex};
+use tauri::Emitter;
 use tokio::io::{AsyncBufReadExt, BufReader};
-use tokio::process::Command;
+use tokio::process::{Child, Command};
 use tokio::sync::oneshot;
 use tokio::sync::Mutex as AsyncMutex;
 
@@ -94,6 +96,26 @@ pub struct K6Runner {
     child_pid: Option<u32>,
 }
 
+/// Output of phase 1: a k6 child process has been spawned, but no streaming
+/// or waiting has happened yet. The cancel channel is held by the
+/// `K6Runner` in the registry; this struct hands the receiver off to phase 2
+/// where it gets wired into a cancel watcher.
+pub(crate) struct PreparedRun {
+    pub(crate) run_id: String,
+    pub(crate) child: Child,
+    pub(crate) cancel_rx: oneshot::Receiver<()>,
+}
+
+/// Output of phase 2: k6 has exited, all streams are joined, all events have
+/// been emitted. The final RunOutput has not been persisted yet.
+pub(crate) struct RunConclude {
+    pub(crate) status: String,
+    pub(crate) exit_code: Option<i32>,
+    pub(crate) error: Option<String>,
+    pub(crate) stdout: String,
+    pub(crate) stderr: String,
+}
+
 impl K6Runner {
     pub fn new(run_id: String, script_path: String, options: RunOptions) -> Self {
         Self {
@@ -112,21 +134,18 @@ impl K6Runner {
         }
     }
 
-    /// Spawn the actual run. This function returns once k6 has been launched;
-    /// output continues to be streamed on background tasks and is also written
-    /// to a JSON file under the app's runs directory.
-    pub async fn spawn(
-        runners: std::sync::Arc<AsyncMutex<Vec<K6Runner>>>,
+    /// Phase 1: resolve the k6 binary, snapshot runner state, register the
+    /// cancel channel, build the `Command`, emit `RunEvent::Started`, and
+    /// spawn the child. Returns the spawned `Child` and its cancel receiver
+    /// for phase 2. On failure, emits `RunEvent::Finished { status: "errored" }`
+    /// and returns Err.
+    pub(crate) async fn prepare_run(
+        runners: Arc<AsyncMutex<Vec<K6Runner>>>,
         idx: usize,
         window: tauri::Window,
-    ) -> Result<(), String> {
-        let app_handle = window.app_handle().clone();
-        let (cancel_tx, cancel_rx) = oneshot::channel();
-
-        // Snapshot the runner state from the shared vector. The caller must NOT
-        // hold the runners lock across this call — we re-acquire it here using
-        // the async API since this function runs inside a tokio runtime.
-        let (run_id, script_path, options, started_at, target_idx) = {
+    ) -> Result<PreparedRun, String> {
+        // Snapshot runner state from the shared vector.
+        let (run_id, _script_path, options, started_at, target_idx) = {
             let guard = runners.lock().await;
             let r = match guard.get(idx) {
                 Some(r) => r,
@@ -141,7 +160,8 @@ impl K6Runner {
             )
         };
 
-        // Attach the cancel sender to the runner in a fresh critical section.
+        // Register the cancel sender on the runner in a fresh critical section.
+        let (cancel_tx, cancel_rx) = oneshot::channel();
         {
             let mut guard = runners.lock().await;
             if let Some(r) = guard.get_mut(target_idx) {
@@ -149,17 +169,13 @@ impl K6Runner {
             }
         }
 
-        let label = options.label.clone();
-
         let k6_path = which_k6().unwrap_or_else(|| "k6".to_string());
         let k6_version = read_k6_version(&k6_path).unwrap_or_else(|_| "unknown".to_string());
 
-        let mut args: Vec<String> = vec!["run".to_string()];
-        args.extend(options.cli_args.iter().cloned());
-        args.push(script_path.clone());
-
+        let args = build_k6_args(&options);
+        let env = merge_env(&options);
         let mut command_vec: Vec<String> = vec![k6_path.clone()];
-        command_vec.extend(args.clone());
+        command_vec.extend(args.iter().cloned());
 
         let _ = window.emit(
             "k6://event",
@@ -171,272 +187,259 @@ impl K6Runner {
             },
         );
 
-        let runners_ref = runners.clone();
-        let window_clone = window.clone();
-        let app_handle_clone = app_handle.clone();
-        let run_id_for_task = run_id.clone();
-        let label_for_task = label.clone();
-        let script_path_for_task = script_path.clone();
+        let mut cmd = Command::new(&k6_path);
+        cmd.args(&args)
+            .envs(&env)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        if options.max_duration_seconds > 0 {
+            cmd.kill_on_drop(true);
+        }
 
-        tauri::async_runtime::spawn(async move {
-            let mut cmd = Command::new(&k6_path);
-            cmd.args(&args)
-                .envs(&options.env)
-                .stdin(Stdio::null())
-                .stdout(Stdio::piped())
-                .stderr(Stdio::piped());
-
-            if options.max_duration_seconds > 0 {
-                cmd.kill_on_drop(true);
+        let child = match cmd.spawn() {
+            Ok(c) => c,
+            Err(e) => {
+                let err = format!("Failed to spawn k6: {}", e);
+                let _ = window.emit(
+                    "k6://event",
+                    RunEvent::Finished {
+                        run_id: run_id.clone(),
+                        finished_at: Utc::now(),
+                        exit_code: None,
+                        status: "errored".to_string(),
+                        error: Some(err.clone()),
+                    },
+                );
+                return Err(err);
             }
+        };
 
-            // Pass through additional env vars.
-            for (k, v) in &options.env {
-                cmd.env(k, v);
+        // Record the child pid so `stop()` can attempt termination.
+        if let Some(pid) = child.id() {
+            let mut guard = match runners.try_lock() {
+                Ok(g) => g,
+                Err(_) => return Err("lock contended while recording child pid".to_string()),
+            };
+            if let Some(r) = guard.iter_mut().find(|r| r.run_id == run_id) {
+                r.child_pid = Some(pid);
             }
+        }
 
-            let mut child = match cmd.spawn() {
-                Ok(c) => c,
-                Err(e) => {
-                    let err = format!("Failed to spawn k6: {}", e);
-                    let _ = window_clone.emit(
+        Ok(PreparedRun {
+            run_id,
+            child,
+            cancel_rx,
+        })
+    }
+
+    /// Phase 2: stream stdout/stderr, parse metrics, watch the cancel
+    /// channel, wait for the child to exit, and emit `RunEvent::Finished`.
+    /// Returns the aggregated stdout/stderr for phase 3 to persist.
+    pub(crate) async fn stream_run(
+        prepared: PreparedRun,
+        window: tauri::Window,
+    ) -> RunConclude {
+        let PreparedRun {
+            run_id,
+            mut child,
+            cancel_rx,
+        } = prepared;
+
+        let stdout = child.stdout.take();
+        let stderr = child.stderr.take();
+
+        let stdout_buf = Arc::new(StdMutex::new(String::new()));
+        let stderr_buf = Arc::new(StdMutex::new(String::new()));
+        let metrics_acc = Arc::new(StdMutex::new(Vec::<MetricSummary>::new()));
+
+        // Stream stdout
+        let stdout_task = if let Some(stdout) = stdout {
+            let win = window.clone();
+            let buf = stdout_buf.clone();
+            let metrics = metrics_acc.clone();
+            let run_id_inner = run_id.clone();
+            Some(tauri::async_runtime::spawn(async move {
+                let mut reader = BufReader::new(stdout).lines();
+                while let Ok(Some(line)) = reader.next_line().await {
+                    {
+                        let mut g = buf.lock().unwrap();
+                        g.push_str(&line);
+                        g.push('\n');
+                    }
+                    if let Some(m) = parse_metric(&line) {
+                        metrics.lock().unwrap().push(m.clone());
+                        let _ = win.emit(
+                            "k6://event",
+                            RunEvent::Metric {
+                                run_id: run_id_inner.clone(),
+                                metric: m,
+                            },
+                        );
+                    }
+                    let _ = win.emit(
                         "k6://event",
-                        RunEvent::Finished {
-                            run_id: run_id_for_task.clone(),
-                            finished_at: Utc::now(),
-                            exit_code: None,
-                            status: "errored".to_string(),
-                            error: Some(err.clone()),
+                        RunEvent::Stdout {
+                            run_id: run_id_inner.clone(),
+                            line,
                         },
                     );
-                    finalize_run(
-                        &app_handle_clone,
-                        &runners_ref,
-                        &run_id_for_task,
-                        RunFinalize {
-                            status: "errored".into(),
-                            exit_code: None,
-                            error: Some(err),
-                            stderr: String::new(),
-                            stdout: String::new(),
-                            label: label_for_task.clone(),
-                            script_path: script_path_for_task.clone(),
-                            started_at,
+                }
+            }))
+        } else {
+            None
+        };
+
+        // Stream stderr
+        let stderr_task = if let Some(stderr) = stderr {
+            let win = window.clone();
+            let buf = stderr_buf.clone();
+            let run_id_inner = run_id.clone();
+            Some(tauri::async_runtime::spawn(async move {
+                let mut reader = BufReader::new(stderr).lines();
+                while let Ok(Some(line)) = reader.next_line().await {
+                    buf.lock().unwrap().push_str(&line);
+                    buf.lock().unwrap().push('\n');
+                    let _ = win.emit(
+                        "k6://event",
+                        RunEvent::Stderr {
+                            run_id: run_id_inner.clone(),
+                            line,
                         },
-                    )
-                    .await;
-                    return;
+                    );
                 }
-            };
+            }))
+        } else {
+            None
+        };
 
-            // Record PID so we can attempt termination on stop.
-            if let Some(pid) = child.id() {
-                let mut guard = match runners_ref.try_lock() {
-                    Ok(g) => g,
-                    Err(_) => return,
-                };
-                if let Some(r) = guard.iter_mut().find(|r| r.run_id == run_id_for_task) {
-                    r.child_pid = Some(pid);
-                }
+        // Cancel watcher: when cancel fires, kill the child best-effort.
+        let cancel_child_id = child.id();
+        let cancel_task = tauri::async_runtime::spawn(async move {
+            let _ = cancel_rx.await;
+            if let Some(pid) = cancel_child_id {
+                let _ = std::process::Command::new("kill")
+                    .arg("-TERM")
+                    .arg(pid.to_string())
+                    .output();
             }
-
-            let stdout = child.stdout.take();
-            let stderr = child.stderr.take();
-
-            // Shared accumulators.
-            let stdout_buf = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-            let stderr_buf = std::sync::Arc::new(std::sync::Mutex::new(String::new()));
-            let metrics_acc = std::sync::Arc::new(std::sync::Mutex::new(Vec::<MetricSummary>::new()));
-
-            // Stream stdout
-            let stdout_task = if let Some(stdout) = stdout {
-                let win = window_clone.clone();
-                let buf = stdout_buf.clone();
-                let metrics = metrics_acc.clone();
-                let run_id_inner = run_id_for_task.clone();
-                Some(tauri::async_runtime::spawn(async move {
-                    let mut reader = BufReader::new(stdout).lines();
-                    while let Ok(Some(line)) = reader.next_line().await {
-                        {
-                            let mut g = buf.lock().unwrap();
-                            g.push_str(&line);
-                            g.push('\n');
-                        }
-                        // Try to parse a summary metric from this line.
-                        if let Some(m) = parse_metric(&line) {
-                            metrics.lock().unwrap().push(m.clone());
-                            let _ = win.emit(
-                                "k6://event",
-                                RunEvent::Metric {
-                                    run_id: run_id_inner.clone(),
-                                    metric: m,
-                                },
-                            );
-                        }
-                        let _ = win.emit(
-                            "k6://event",
-                            RunEvent::Stdout {
-                                run_id: run_id_inner.clone(),
-                                line,
-                            },
-                        );
-                    }
-                }))
-            } else {
-                None
-            };
-
-            let stderr_task = if let Some(stderr) = stderr {
-                let win = window_clone.clone();
-                let buf = stderr_buf.clone();
-                let run_id_inner = run_id_for_task.clone();
-                Some(tauri::async_runtime::spawn(async move {
-                    let mut reader = BufReader::new(stderr).lines();
-                    while let Ok(Some(line)) = reader.next_line().await {
-                        buf.lock().unwrap().push_str(&line);
-                        buf.lock().unwrap().push('\n');
-                        let _ = win.emit(
-                            "k6://event",
-                            RunEvent::Stderr {
-                                run_id: run_id_inner.clone(),
-                                line,
-                            },
-                        );
-                    }
-                }))
-            } else {
-                None
-            };
-
-            // Cancellation watcher: when cancel fires, kill the child.
-            let cancel_child_id = child.id();
-            let cancel_task = tauri::async_runtime::spawn(async move {
-                let _ = cancel_rx.await;
-                if let Some(pid) = cancel_child_id {
-                    // best-effort terminate
-                    let _ = std::process::Command::new("kill")
-                        .arg("-TERM")
-                        .arg(pid.to_string())
-                        .output();
-                }
-            });
-            // Hold cancel_task so it isn't dropped until the function returns;
-            // we don't await it (would deadlock) — it self-completes when
-            // cancel_tx is dropped in finalize_run.
-            let _cancel_task = cancel_task;
-
-            let status = child.wait().await;
-            // Drop our reference to the runners vector's runner so cancel_tx
-            // is released (if not already). We can't await cancel_task — that
-            // would deadlock because cancel_rx only resolves when the sender
-            // (still held by the runner) is dropped or used. The cancel_task
-            // continues independently and is cleaned up when its scope ends.
-
-            if let Some(t) = stdout_task {
-                let _ = t.await;
-            }
-            if let Some(t) = stderr_task {
-                let _ = t.await;
-            }
-
-            let exit_code = status.as_ref().ok().and_then(|s| s.code());
-            let (status_str, error) = match &status {
-                Ok(s) if s.success() => ("passed".to_string(), None),
-                Ok(s) => {
-                    let code = s.code().unwrap_or(-1);
-                    (
-                        "failed".to_string(),
-                        Some(format!("k6 exited with code {}", code)),
-                    )
-                }
-                Err(e) => ("errored".to_string(), Some(format!("wait failed: {}", e))),
-            };
-
-            let _ = window_clone.emit(
-                "k6://event",
-                RunEvent::Finished {
-                    run_id: run_id_for_task.clone(),
-                    finished_at: Utc::now(),
-                    exit_code,
-                    status: status_str.clone(),
-                    error: error.clone(),
-                },
-            );
-
-            let stdout_text = stdout_buf.lock().unwrap().clone();
-            let stderr_text = stderr_buf.lock().unwrap().clone();
-
-            finalize_run(
-                &app_handle_clone,
-                &runners_ref,
-                &run_id_for_task,
-                RunFinalize {
-                    status: status_str,
-                    exit_code,
-                    error,
-                    stderr: stderr_text,
-                    stdout: stdout_text,
-                    label: label_for_task.clone(),
-                    script_path: script_path_for_task.clone(),
-                    started_at,
-                },
-            )
-            .await;
         });
+        let _cancel_task = cancel_task;
 
-        Ok(())
-    }
-}
-
-struct RunFinalize {
-    status: String,
-    exit_code: Option<i32>,
-    error: Option<String>,
-    stderr: String,
-    stdout: String,
-    label: Option<String>,
-    script_path: String,
-    started_at: DateTime<Utc>,
-}
-
-async fn finalize_run(
-    app_handle: &tauri::AppHandle,
-    runners: &std::sync::Arc<AsyncMutex<Vec<K6Runner>>>,
-    run_id: &str,
-    fin: RunFinalize,
-) {
-    // Persist RunOutput JSON to the runs directory.
-    let runs_dir = match fs::runs_dir(app_handle) {
-        Ok(p) => p,
-        Err(e) => {
-            eprintln!("runs_dir error: {}", e);
-            return;
+        let status = child.wait().await;
+        if let Some(t) = stdout_task {
+            let _ = t.await;
         }
-    };
-    let out_path = runs_dir.join(format!("{}.json", run_id));
-    let output = RunOutput {
-        run_id: run_id.to_string(),
-        script_path: fin.script_path.clone(),
-        label: fin.label.clone(),
-        started_at: fin.started_at,
-        finished_at: Some(Utc::now()),
-        exit_code: fin.exit_code,
-        status: fin.status.clone(),
-        stdout: fin.stdout.clone(),
-        stderr: fin.stderr.clone(),
-        metrics: parse_metrics(&fin.stdout),
-        error: fin.error.clone(),
-    };
-    if let Ok(json) = serde_json::to_string_pretty(&output) {
-        let _ = std::fs::write(&out_path, json);
+        if let Some(t) = stderr_task {
+            let _ = t.await;
+        }
+
+        let exit_code = status.as_ref().ok().and_then(|s| s.code());
+        let (status_str, error) = match &status {
+            Ok(s) if s.success() => ("passed".to_string(), None),
+            Ok(s) => {
+                let code = s.code().unwrap_or(-1);
+                (
+                    "failed".to_string(),
+                    Some(format!("k6 exited with code {}", code)),
+                )
+            }
+            Err(e) => ("errored".to_string(), Some(format!("wait failed: {}", e))),
+        };
+
+        let _ = window.emit(
+            "k6://event",
+            RunEvent::Finished {
+                run_id: run_id.clone(),
+                finished_at: Utc::now(),
+                exit_code,
+                status: status_str.clone(),
+                error: error.clone(),
+            },
+        );
+
+        let stdout_text = stdout_buf.lock().unwrap().clone();
+        let stderr_text = stderr_buf.lock().unwrap().clone();
+
+        RunConclude {
+            status: status_str,
+            exit_code,
+            error,
+            stdout: stdout_text,
+            stderr: stderr_text,
+        }
     }
 
-    // Drop the runner from the in-memory list.
-    let mut guard = match runners.try_lock() {
-        Ok(g) => g,
-        Err(_) => return,
-    };
-    guard.retain(|r| r.run_id != run_id);
+    /// Phase 3: persist the final `RunOutput` JSON and remove the runner from
+    /// the registry. After this returns, dropping the `K6Runner` in the
+    /// registry will release the cancel sender (if not already consumed).
+    pub(crate) async fn conclude_run(
+        app_handle: &tauri::AppHandle,
+        runners: Arc<AsyncMutex<Vec<K6Runner>>>,
+        run_id: &str,
+        conclusion: RunConclude,
+    ) {
+        // Read runner metadata before we drop the entry.
+        let (label, script_path, started_at) = {
+            let guard = runners.lock().await;
+            match guard.iter().find(|r| r.run_id == run_id) {
+                Some(r) => (r.options.label.clone(), r.script_path.clone(), r.started_at),
+                None => return,
+            }
+        };
+
+        // Persist RunOutput JSON to the runs directory.
+        let runs_dir = match fs::runs_dir(app_handle) {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("runs_dir error: {}", e);
+                return;
+            }
+        };
+        let out_path = runs_dir.join(format!("{}.json", run_id));
+        let stdout_for_parse = conclusion.stdout.clone();
+        let metrics = parse_metrics(&stdout_for_parse);
+        let output = RunOutput {
+            run_id: run_id.to_string(),
+            script_path,
+            label,
+            started_at,
+            finished_at: Some(Utc::now()),
+            exit_code: conclusion.exit_code,
+            status: conclusion.status,
+            stdout: conclusion.stdout,
+            stderr: conclusion.stderr,
+            metrics,
+            error: conclusion.error,
+        };
+        if let Ok(json) = serde_json::to_string_pretty(&output) {
+            let _ = std::fs::write(&out_path, json);
+        }
+
+        // Drop the runner from the in-memory list.
+        let mut guard = match runners.try_lock() {
+            Ok(g) => g,
+            Err(_) => return,
+        };
+        guard.retain(|r| r.run_id != run_id);
+    }
+}
+
+// --- Pure-function helpers (unit-testable, no I/O) --------------------
+
+/// Build the k6 CLI argument vector: passes `options.cli_args` straight
+/// through. The "run" subcommand and the script path are added by the
+/// caller. Centralised here so future `RunOptions` fields (e.g. setup
+/// scripts, env files) can be folded in without touching `prepare_run`.
+fn build_k6_args(options: &RunOptions) -> Vec<String> {
+    options.cli_args.clone()
+}
+
+/// Merge env vars from `RunOptions`. Today this is a passthrough; the seam
+/// exists so future defaults (e.g. `K6_NO_COLOR=1`) can land here without
+/// changing the call site.
+fn merge_env(options: &RunOptions) -> HashMap<String, String> {
+    options.env.clone()
 }
 
 /// Detect the k6 binary.
@@ -576,7 +579,7 @@ mod tests {
         assert!(m.value.contains("120") && m.value.contains("ms"), "got {}", m.value);
     }
 
-#[test]
+    #[test]
     fn parses_iterations_count() {
         let line = "    iterations.....................: 1      0.202546/s";
         let m = parse_metric(line).expect("should parse");
@@ -625,5 +628,58 @@ http_reqs...................: 0    100    10/s
         let m = parse_metrics(stdout);
         let names: Vec<_> = m.iter().map(|m| m.name.clone()).collect();
         assert_eq!(names, vec!["http_req_duration", "http_reqs"]);
+    }
+
+    #[test]
+    fn build_k6_args_passes_cli_args_through() {
+        let opts = RunOptions {
+            label: None,
+            env: HashMap::new(),
+            cli_args: vec!["--summary-trend-stats=p(95)".into(), "--quiet".into()],
+            max_duration_seconds: 0,
+        };
+        assert_eq!(
+            build_k6_args(&opts),
+            vec!["--summary-trend-stats=p(95)".to_string(), "--quiet".to_string()]
+        );
+    }
+
+    #[test]
+    fn build_k6_args_empty_when_no_overrides() {
+        let opts = RunOptions {
+            label: None,
+            env: HashMap::new(),
+            cli_args: vec![],
+            max_duration_seconds: 0,
+        };
+        assert!(build_k6_args(&opts).is_empty());
+    }
+
+    #[test]
+    fn merge_env_is_passthrough_today() {
+        let mut env = HashMap::new();
+        env.insert("BASE_URL".into(), "https://api.example.com".into());
+        env.insert("TOKEN".into(), "abc".into());
+        let opts = RunOptions {
+            label: None,
+            env,
+            cli_args: vec![],
+            max_duration_seconds: 0,
+        };
+        let merged = merge_env(&opts);
+        assert_eq!(merged.get("BASE_URL").map(String::as_str), Some("https://api.example.com"));
+        assert_eq!(merged.get("TOKEN").map(String::as_str), Some("abc"));
+        assert_eq!(merged.len(), 2);
+    }
+
+    #[test]
+    fn merge_env_empty_when_no_overrides() {
+        let opts = RunOptions {
+            label: None,
+            env: HashMap::new(),
+            cli_args: vec![],
+            max_duration_seconds: 0,
+        };
+        assert!(merge_env(&opts).is_empty());
     }
 }
