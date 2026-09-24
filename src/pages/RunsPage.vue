@@ -22,6 +22,7 @@ import Label from "@/components/ui/Label.vue";
 import Badge from "@/components/ui/Badge.vue";
 import Select from "@/components/ui/Select.vue";
 import ScrollArea from "@/components/ui/ScrollArea.vue";
+import LiveOutputPane from "@/components/LiveOutputPane.vue";
 import { useScriptsStore } from "@/stores/scripts";
 import { useRunsStore, type LiveRun } from "@/stores/runs";
 import { useAppStore } from "@/stores/app";
@@ -337,22 +338,16 @@ onMounted(async () => {
             </CardHeader>
             <CardContent class="p-0">
               <div class="grid h-[420px] grid-rows-2 divide-y divide-border">
-                <ScrollArea class="bg-black/95 p-3 font-mono text-xs leading-relaxed text-emerald-100">
-                  <div v-for="(l, i) in selectedRun.stdout_lines" :key="`o-${i}`">
-                    {{ l }}
-                  </div>
-                  <div v-if="!selectedRun.stdout_lines.length" class="text-muted-foreground">
-                    waiting…
-                  </div>
-                </ScrollArea>
-                <ScrollArea class="bg-red-950/90 p-3 font-mono text-xs leading-relaxed text-red-100">
-                  <div v-for="(l, i) in selectedRun.stderr_lines" :key="`e-${i}`">
-                    {{ l }}
-                  </div>
-                  <div v-if="!selectedRun.stderr_lines.length" class="text-red-300/40">
-                    {{ t('common.noErrors') }}
-                  </div>
-                </ScrollArea>
+                <LiveOutputPane
+                  :lines="selectedRun.stdout_lines"
+                  tone="stdout"
+                  :placeholder="t('runs.waitingForOutput')"
+                />
+                <LiveOutputPane
+                  :lines="selectedRun.stderr_lines"
+                  tone="stderr"
+                  :placeholder="t('common.noErrors')"
+                />
               </div>
             </CardContent>
           </Card>

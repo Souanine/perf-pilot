@@ -141,6 +141,7 @@ export default {
     waitingForOutput: "— 等待输出 —",
     k6NotFound: "未找到 k6 二进制。",
     iterationFormat: (n: string, unit: string) => `${n} ${unit}`,
+    jumpToLatest: "跳到最新",
   },
   history: {
     title: "历史",

@@ -146,6 +146,7 @@ export default {
     waitingForOutput: "— waiting for output —",
     k6NotFound: "k6 binary not found.",
     iterationFormat: (n: string, unit: string) => `${n} ${unit}`,
+    jumpToLatest: "Jump to latest",
   },
   history: {
     title: "History",
