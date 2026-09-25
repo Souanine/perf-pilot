@@ -93,9 +93,11 @@ jobs:
       # scripts/build-dmg.sh for context), so we re-bundle the .app with
       # `create-dmg` / `hdiutil` afterwards. Windows has no equivalent
       # workaround — the NSIS installer comes straight out of Tauri.
+      # The triple arg tells the script where Tauri stashed the .app
+      # (`target/<triple>/release/bundle/macos/...`).
       - name: Build DMG (macOS only)
         if: matrix.platform == 'macos-latest'
-        run: bash scripts/build-dmg.sh
+        run: bash scripts/build-dmg.sh ${{ matrix.target }}
 
       - name: Upload macOS artifacts
         if: matrix.platform == 'macos-latest'

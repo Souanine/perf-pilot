@@ -3,23 +3,39 @@
 # the .app to install. Tauri's bundled create-dmg shim has a known arg
 # bug on v2, so we use hdiutil + ditto directly.
 #
-# Requires: the Tauri release build has already run (`npm run tauri:build`)
-#           so src-tauri/target/release/bundle/macos/PerfPilot.app exists.
+# Requires: the Tauri release build has already run.
+#
+# Args:
+#   $1  Optional rustc target triple (e.g. aarch64-apple-darwin). When
+#       passed, looks for the .app under
+#       src-tauri/target/<triple>/release/bundle/macos/PerfPilot.app —
+#       which is where `tauri build --target <triple>` puts it. Omit
+#       for a default-arch build at src-tauri/target/release/...
 
 set -euo pipefail
 
 PROJECT_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
-APP_SRC="$PROJECT_ROOT/src-tauri/target/release/bundle/macos/PerfPilot.app"
+TARGET_TRIPLE="${1:-}"
+if [ -n "$TARGET_TRIPLE" ]; then
+  APP_SRC="$PROJECT_ROOT/src-tauri/target/${TARGET_TRIPLE}/release/bundle/macos/PerfPilot.app"
+else
+  APP_SRC="$PROJECT_ROOT/src-tauri/target/release/bundle/macos/PerfPilot.app"
+fi
 VERSION="$(node -p "require('$PROJECT_ROOT/package.json').version")"
 OUT_DMG="$PROJECT_ROOT/PerfPilot-${VERSION}-arm64.dmg"
 
 if [ ! -d "$APP_SRC" ]; then
-  echo "error: $APP_SRC not found — run 'npm run tauri:build' first" >&2
+  echo "error: $APP_SRC not found — run 'npm run tauri:build' (with --target $TARGET_TRIPLE if applicable) first" >&2
   exit 1
 fi
 
-STAGING="$(mktemp -d -t perf-pilot-dmg)"
-trap 'rm -rf "$STAGING"' EXIT
+# Portable mktemp across macOS / Linux / Windows Git Bash — same fix as
+# scripts/fetch-k6.sh: avoid `-t PREFIX` (Windows rejects prefixes without
+# X's) by creating a fresh directory and naming inside it.
+STAGING_DIR="$(mktemp -d)"
+STAGING="$STAGING_DIR/staging"
+mkdir -p "$STAGING"
+trap 'rm -rf "$STAGING_DIR"' EXIT
 
 # ditto preserves Mac metadata + symlinks better than cp -R.
 ditto "$APP_SRC" "$STAGING/PerfPilot.app"
