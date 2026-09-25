@@ -252,6 +252,11 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .setup(|app| {
+            // Resolve the bundled k6 sidecar's expected on-disk path and
+            // publish it via env var so `k6::which_k6` picks it up before
+            // falling back to PATH. No-op in dev if the binary isn't
+            // sitting next to the executable yet.
+            k6::publish_sidecar_path_to_env();
             // Ensure data dirs exist on startup.
             let _ = fs::ensure_dirs(&app.handle());
             let _ = fs::ensure_reports_dir(&app.handle());

@@ -42,7 +42,10 @@
     ],
     "category": "DeveloperTool",
     "shortDescription": "AI-Native Performance Testing Platform",
-    "longDescription": "PerfPilot is an AI-native desktop performance testing platform built on Tauri 2, Vue 3, and k6."
+    "longDescription": "PerfPilot is an AI-native desktop performance testing platform built on Tauri 2, Vue 3, and k6.",
+    "externalBin": [
+      "binaries/k6"
+    ]
   },
   "plugins": {}
 }

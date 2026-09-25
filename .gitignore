@@ -43,3 +43,7 @@ src-tauri/PerfPilot.dmg
 src-tauri/PerfPilot-*.dmg
 PerfPilot-*.dmg
 *.dmg
+
+# Sidecar binaries (~60 MB each, fetched per-platform via scripts/fetch-k6.sh)
+src-tauri/binaries/*
+!src-tauri/binaries/.gitkeep

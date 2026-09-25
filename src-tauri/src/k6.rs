@@ -475,8 +475,19 @@ fn merge_env(options: &RunOptions) -> HashMap<String, String> {
 }
 
 /// Detect the k6 binary.
+///
+/// Resolution order:
+///   1. `K6_PATH` — explicit user override (e.g. for a custom-built k6)
+///   2. `PERFPILOT_K6_BIN` — bundled sidecar, set by `lib::run` at startup
+///   3. Common system locations (Homebrew, system paths)
+///   4. `command -v k6` against `$PATH`
 pub fn which_k6() -> Option<String> {
     if let Ok(p) = std::env::var("K6_PATH") {
+        if std::path::Path::new(&p).exists() {
+            return Some(p);
+        }
+    }
+    if let Ok(p) = std::env::var("PERFPILOT_K6_BIN") {
         if std::path::Path::new(&p).exists() {
             return Some(p);
         }
@@ -501,6 +512,39 @@ pub fn which_k6() -> Option<String> {
         }
     }
     None
+}
+
+/// Resolve the bundled k6 sidecar's expected on-disk path.
+///
+/// Tauri 2's `bundle.externalBin` ships the binary alongside the host
+/// executable (macOS: `Contents/MacOS/`, Windows/Linux: next to the .exe).
+/// The on-disk filename is `k6-<target-triple>` where `<target-triple>` is
+/// what `rustc -vV` reports as `host` (e.g. `aarch64-apple-darwin`).
+///
+/// In dev (`tauri dev`) the binary is placed next to the dev executable;
+/// in release builds it's inside the bundled `.app`. Both share the same
+/// directory as `current_exe()`, so this works for both.
+pub fn resolve_sidecar_k6_path() -> Option<std::path::PathBuf> {
+    let exe = std::env::current_exe().ok()?;
+    let dir = exe.parent()?;
+    let triple = current_target_triple();
+    let p = dir.join(format!("k6-{triple}"));
+    if p.exists() { Some(p) } else { None }
+}
+
+/// `rustc -vV` host triple, e.g. `aarch64-apple-darwin`.
+fn current_target_triple() -> &'static str {
+    // Computed at compile time by `build.rs` from Cargo's `TARGET` env var.
+    // This is the same string Tauri uses to suffix the sidecar filename.
+    option_env!("PERFPILOT_TARGET_TRIPLE").unwrap_or("")
+}
+
+/// Marker that the sidecar env var is set. Kept separate from `which_k6`
+/// so the integration in `lib.rs` is a single call.
+pub fn publish_sidecar_path_to_env() {
+    if let Some(p) = resolve_sidecar_k6_path() {
+        std::env::set_var("PERFPILOT_K6_BIN", &p);
+    }
 }
 
 /// Probe k6 by running `k6 version`.
@@ -733,5 +777,59 @@ http_reqs...................: 0    100    10/s
             max_duration_seconds: 0,
         };
         assert!(merge_env(&opts).is_empty());
+    }
+
+    /// `resolve_sidecar_k6_path` should look next to `current_exe()` for a
+    /// binary named `k6-<target-triple>`. We don't depend on a real binary
+    /// existing — just confirm the path shape matches the Tauri convention.
+    #[test]
+    fn sidecar_path_matches_target_triple_suffix() {
+        let triple = current_target_triple();
+        assert!(!triple.is_empty(), "PERFPILOT_TARGET_TRIPLE must be set by build.rs");
+        if let Some(p) = resolve_sidecar_k6_path() {
+            let name = p.file_name().unwrap().to_string_lossy().to_string();
+            assert_eq!(name, format!("k6-{triple}"));
+        }
+        // If `current_exe()` happens not to have a sibling k6 binary (the
+        // common case during `cargo test`), `resolve_sidecar_k6_path` is
+        // allowed to return None — we only assert the *shape* when present.
+    }
+
+    /// End-to-end: when the system has no k6 (PATH is empty, K6_PATH is
+    /// unset), setting `PERFPILOT_K6_BIN` to the bundled sidecar must be
+    /// enough for `which_k6` to find it. This is the exact mechanism
+    /// `publish_sidecar_path_to_env` uses at app startup.
+    #[test]
+    fn which_k6_falls_through_to_sidecar_when_path_is_clean() {
+        // Locate the sidecar via the source tree (works regardless of
+        // where `cargo test` happens to put the test runner).
+        let triple = current_target_triple();
+        let src_sidecar = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("binaries")
+            .join(format!("k6-{triple}"));
+        assert!(
+            src_sidecar.exists(),
+            "expected sidecar at {} (run scripts/fetch-k6.sh)",
+            src_sidecar.display()
+        );
+
+        // Clear every resolution source we know about, then expose the
+        // sidecar through the env var mechanism the runtime uses.
+        let prev_k6_path = std::env::var("K6_PATH").ok();
+        let prev_sidecar = std::env::var("PERFPILOT_K6_BIN").ok();
+        std::env::remove_var("K6_PATH");
+        std::env::set_var("PERFPILOT_K6_BIN", &src_sidecar);
+
+        let resolved = which_k6().expect("which_k6 should find the sidecar");
+        assert_eq!(resolved, src_sidecar.to_string_lossy().to_string());
+
+        // Restore env so parallel tests aren't polluted.
+        if let Some(v) = prev_k6_path {
+            std::env::set_var("K6_PATH", v);
+        }
+        match prev_sidecar {
+            Some(v) => std::env::set_var("PERFPILOT_K6_BIN", v),
+            None => std::env::remove_var("PERFPILOT_K6_BIN"),
+        }
     }
 }
