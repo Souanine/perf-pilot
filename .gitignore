@@ -36,3 +36,10 @@ lerna-debug.log*
 playwright-report
 test-results
 .playwright-cache
+
+# Release build artifacts (regenerable via `npm run tauri:build`)
+src-tauri/target
+src-tauri/PerfPilot.dmg
+src-tauri/PerfPilot-*.dmg
+PerfPilot-*.dmg
+*.dmg

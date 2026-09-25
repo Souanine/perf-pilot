@@ -16,6 +16,8 @@
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build",
+    "tauri:release-dmg": "tauri build && bash scripts/build-dmg.sh",
+    "build-dmg": "bash scripts/build-dmg.sh",
     "typecheck": "vue-tsc --noEmit"
   },
   "dependencies": {
