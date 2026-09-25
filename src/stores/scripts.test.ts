@@ -79,4 +79,36 @@ describe("scripts store", () => {
     expect(s.buffers[0].dirty).toBe(false);
     expect(s.activePath).toBe("/x/new.js");
   });
+
+  it("save patches the file list without a refresh round-trip", async () => {
+    const s = useScriptsStore();
+    await s.refresh();
+    const listBefore = (api.listScripts as unknown as Mock).mock.calls.length;
+    await s.open("/x/a.js");
+    s.updateContent("/x/a.js", "// rewritten with more content\n");
+    await s.save("/x/a.js");
+    // No refresh() was triggered by save.
+    expect((api.listScripts as unknown as Mock).mock.calls.length).toBe(listBefore);
+    // The in-memory entry was updated to reflect the new content.
+    const entry = s.files.find((f) => f.path === "/x/a.js");
+    expect(entry?.size).toBe("// rewritten with more content\n".length);
+  });
+
+  it("saveAs inserts a new entry into the file list without refresh()", async () => {
+    const s = useScriptsStore();
+    await s.refresh();
+    const listBefore = (api.listScripts as unknown as Mock).mock.calls.length;
+    await s.saveAs("/x/brand-new.js", "// hello\n");
+    expect((api.listScripts as unknown as Mock).mock.calls.length).toBe(listBefore);
+    expect(s.files.find((f) => f.path === "/x/brand-new.js")).toBeTruthy();
+  });
+
+  it("remove drops the file entry without refresh()", async () => {
+    const s = useScriptsStore();
+    await s.refresh();
+    const listBefore = (api.listScripts as unknown as Mock).mock.calls.length;
+    await s.remove("/x/a.js");
+    expect((api.listScripts as unknown as Mock).mock.calls.length).toBe(listBefore);
+    expect(s.files.find((f) => f.path === "/x/a.js")).toBeUndefined();
+  });
 });

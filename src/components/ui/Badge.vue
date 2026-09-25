@@ -16,10 +16,13 @@ const badgeVariants = cva(
           "border-transparent bg-destructive text-destructive-foreground shadow hover:bg-destructive/80",
         outline: "text-foreground",
         success:
-          "border-transparent bg-emerald-500/15 text-emerald-700 dark:text-emerald-300",
+          // Higher-contrast palette: 100/800 in light mode keeps WCAG AA
+          // for the foreground, and the dark variants push past 7:1.
+          "border-transparent bg-emerald-100 text-emerald-800 dark:bg-emerald-500/20 dark:text-emerald-200",
         warning:
-          "border-transparent bg-amber-500/15 text-amber-700 dark:text-amber-300",
-        info: "border-transparent bg-sky-500/15 text-sky-700 dark:text-sky-300",
+          "border-transparent bg-amber-100 text-amber-900 dark:bg-amber-500/20 dark:text-amber-200",
+        info:
+          "border-transparent bg-sky-100 text-sky-800 dark:bg-sky-500/20 dark:text-sky-200",
       },
     },
     defaultVariants: {

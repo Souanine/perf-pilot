@@ -13,6 +13,7 @@ import CardDescription from "@/components/ui/CardDescription.vue";
 import CardContent from "@/components/ui/CardContent.vue";
 import Button from "@/components/ui/Button.vue";
 import Badge from "@/components/ui/Badge.vue";
+import Sparkline from "@/components/Sparkline.vue";
 import {
   Activity,
   FileCode2,
@@ -45,6 +46,25 @@ const llmConfigured = computed(() =>
       !(p.api_format === "chat_completions" && p.base_url.includes("localhost:11434")),
   ),
 );
+
+// Reverse so the sparkline reads oldest → newest (matches left-to-right
+// time intuition). Cap at the most recent 20 runs so the chart stays
+// readable; older runs compress into a thin tail.
+const p95Series = computed(() =>
+  [...runs.history].reverse().slice(-20).map((r) => r.p95_ms ?? null),
+);
+const rpsSeries = computed(() =>
+  [...runs.history].reverse().slice(-20).map((r) => r.rps ?? null),
+);
+const errorSeries = computed(() =>
+  [...runs.history].reverse().slice(-20).map((r) => r.error_rate_pct ?? null),
+);
+const hasChartData = computed(
+  () =>
+    p95Series.value.some((v) => v !== null) ||
+    rpsSeries.value.some((v) => v !== null) ||
+    errorSeries.value.some((v) => v !== null),
+);
 </script>
 
 <template>
@@ -70,7 +90,7 @@ const llmConfigured = computed(() =>
       <div class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-4">
         <Card>
           <CardContent class="flex items-center gap-3 p-5">
-            <div class="grid h-10 w-10 place-items-center rounded-md bg-emerald-500/15 text-emerald-600">
+            <div class="grid h-10 w-10 place-items-center rounded-md bg-emerald-100 text-emerald-700 dark:bg-emerald-500/20 dark:text-emerald-300">
               <CheckCircle2 class="h-5 w-5" />
             </div>
             <div>
@@ -167,6 +187,56 @@ const llmConfigured = computed(() =>
           </CardContent>
         </Card>
       </div>
+
+      <Card v-if="hasChartData">
+        <CardHeader>
+          <CardTitle>{{ t('dashboard.trendsTitle') }}</CardTitle>
+          <CardDescription>{{ t('dashboard.trendsDesc') }}</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div class="grid grid-cols-1 gap-6 md:grid-cols-3">
+            <div class="space-y-1">
+              <div class="flex items-baseline justify-between">
+                <span class="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">p(95) latency</span>
+                <span class="text-xs text-muted-foreground">ms</span>
+              </div>
+              <Sparkline
+                :values="p95Series"
+                kind="p95"
+                :width="320"
+                :height="64"
+                :label="`p95 latency, ${p95Series.length} runs`"
+              />
+            </div>
+            <div class="space-y-1">
+              <div class="flex items-baseline justify-between">
+                <span class="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Throughput</span>
+                <span class="text-xs text-muted-foreground">req/s</span>
+              </div>
+              <Sparkline
+                :values="rpsSeries"
+                kind="rps"
+                :width="320"
+                :height="64"
+                :label="`rps, ${rpsSeries.length} runs`"
+              />
+            </div>
+            <div class="space-y-1">
+              <div class="flex items-baseline justify-between">
+                <span class="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">Error rate</span>
+                <span class="text-xs text-muted-foreground">%</span>
+              </div>
+              <Sparkline
+                :values="errorSeries"
+                kind="error"
+                :width="320"
+                :height="64"
+                :label="`error rate, ${errorSeries.length} runs`"
+              />
+            </div>
+          </div>
+        </CardContent>
+      </Card>
     </div>
   </div>
 </template>

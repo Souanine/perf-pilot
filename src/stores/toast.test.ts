@@ -31,4 +31,16 @@ describe("toast store", () => {
     vi.advanceTimersByTime(1500);
     expect(t.items.length).toBe(0);
   });
+
+  it("caps the visible stack at MAX_TOASTS by dropping the oldest", () => {
+    const t = useToastStore();
+    for (let i = 0; i < 12; i += 1) {
+      t.push({ title: `t${i}` });
+    }
+    expect(t.items.length).toBe(8);
+    // The oldest 4 should have been shifted off; the surviving stack
+    // should start at t4 and end at t11.
+    expect(t.items[0].title).toBe("t4");
+    expect(t.items.at(-1)?.title).toBe("t11");
+  });
 });

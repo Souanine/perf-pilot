@@ -31,3 +31,8 @@ lerna-debug.log*
 .env
 .env.local
 .env.*.local
+
+# Playwright artifacts (e2e screenshots, traces, videos)
+playwright-report
+test-results
+.playwright-cache

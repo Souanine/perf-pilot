@@ -3,6 +3,10 @@ import { computed, ref } from "vue";
 import { api, type ReportRecord, type ReportGenResponse } from "@/lib/tauri";
 import { useLLMStore } from "@/stores/llm";
 import { useLocaleStore } from "@/stores/locale";
+import {
+  newStreamRequestId,
+  startLlmStream,
+} from "@/composables/useLlmStream";
 
 export interface ReportEntry extends ReportRecord {
   /** Cached markdown body — fetched lazily by `load()` to avoid loading
@@ -97,7 +101,11 @@ export const useReportsStore = defineStore("reports", () => {
     }
   }
 
-  /** Generate (or regenerate) the report for a run using the active LLM. */
+  /** Generate (or regenerate) the report for a run using the active LLM.
+   *
+   *  Streams tokens from the LLM provider so the History page can render
+   *  the markdown body as it arrives. Falls back to a buffered render on
+   *  `done` either way. */
   async function generate(runId: string): Promise<ReportGenResponse | null> {
     const llm = useLLMStore();
     const locale = useLocaleStore();
@@ -107,12 +115,38 @@ export const useReportsStore = defineStore("reports", () => {
     }
     generating.value[runId] = true;
     lastError.value[runId] = "";
+    // Optimistic stub so the viewer shows the streaming buffer right away.
+    index.value[runId] = {
+      run_id: runId,
+      path: "",
+      model: llm.active.model,
+      created_at: new Date().toISOString(),
+      size: 0,
+      body: "",
+      loading: true,
+    };
+    openRunId.value = runId;
+    openBody.value = "";
+
+    const requestId = newStreamRequestId();
+    let assembled = "";
+    const controller = await startLlmStream(requestId, (chunk) => {
+      assembled += chunk;
+      const entry = index.value[runId];
+      if (entry) {
+        // The index entry may have been wiped by a `discard()` during
+        // streaming; only mutate if it's still there.
+        entry.body = assembled;
+        entry.size = assembled.length;
+      }
+      openBody.value = assembled;
+    });
+
     try {
-      const resp = await api.generateReport(llm.active, {
+      const resp = await api.generateReportStream(requestId, llm.active, {
         run_id: runId,
         locale: locale.locale,
       });
-      // Patch / insert the index entry.
       const now = new Date().toISOString();
       index.value[runId] = {
         run_id: runId,
@@ -130,6 +164,7 @@ export const useReportsStore = defineStore("reports", () => {
       lastError.value[runId] = e instanceof Error ? e.message : String(e);
       return null;
     } finally {
+      controller.cancel();
       generating.value[runId] = false;
     }
   }

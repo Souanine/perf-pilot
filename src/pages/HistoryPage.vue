@@ -75,7 +75,21 @@ function statusBadge(s: string) {
 
 async function loadDetail(id: string) {
   selectedId.value = id;
-  detail.value = await runs.loadDetail(id);
+  try {
+    detail.value = await runs.loadDetail(id);
+  } catch (e: unknown) {
+    // `runs.loadDetail` already catches per-run IO errors and returns
+    // null, so reaching this branch is rare. Still — if anything
+    // escapes (e.g. an unexpected serialisation failure), keep the
+    // page usable and surface a friendly message instead of an
+    // unhandled rejection.
+    detail.value = null;
+    toast.push({
+      title: t('history.loadDetailFailed'),
+      description: e instanceof Error ? e.message : String(e),
+      variant: "destructive",
+    });
+  }
   // If the report index hasn't been refreshed yet (e.g. first visit to the
   // page), do it now so the per-run report entry is available.
   if (Object.keys(reports.index).length === 0) {
@@ -99,9 +113,22 @@ watch(
   { immediate: true },
 );
 
-watch(filtered, async (list) => {
-  if (!selectedId.value && list.length) {
-    await loadDetail(list[0].run_id);
+/** When the filter input changes, drop the currently-selected run if
+ *  it no longer matches — otherwise the detail panel shows a stale
+ *  view that the user can't easily reconcile with the (empty) list.
+ *  Otherwise leave the existing selection alone, even if it's not the
+ *  first row. */
+watch(filtered, (list) => {
+  if (!selectedId.value) {
+    if (list.length) {
+      loadDetail(list[0].run_id);
+    }
+    return;
+  }
+  const stillVisible = list.some((r) => r.run_id === selectedId.value);
+  if (!stillVisible) {
+    selectedId.value = null;
+    detail.value = null;
   }
 });
 

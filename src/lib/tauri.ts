@@ -33,6 +33,14 @@ export interface RunRecord {
   finished_at: string | null;
   exit_code: number | null;
   script_path: string;
+  /** `http_req_duration` p(95) in milliseconds, extracted at conclude
+   *  time. Drives the Dashboard trend chart; undefined for older runs
+   *  that predate the index field. */
+  p95_ms?: number | null;
+  /** Throughput in requests per second, from `http_reqs`. */
+  rps?: number | null;
+  /** Error rate as a percentage (0–100), from `http_req_failed`. */
+  error_rate_pct?: number | null;
 }
 
 export interface MetricSummary {
@@ -180,6 +188,25 @@ export const api = {
       request,
       history: history ?? null,
     }),
+  /**
+   * Streaming variant of `generateScript`. The caller must already be
+   * subscribed to `onLlmStream` with the same `requestId`. The promise
+   * resolves with the same shape as `generateScript` after the `done`
+   * event lands; it rejects with the streamed `error.message` if the
+   * backend emits an error frame before completion.
+   */
+  generateScriptStream: (
+    requestId: string,
+    provider: LlmProviderConfig,
+    request: ScriptGenRequest,
+    history?: ChatMessage[],
+  ) =>
+    invoke<ScriptGenResponse>("generate_script_stream", {
+      requestId,
+      provider,
+      request,
+      history: history ?? null,
+    }),
   testLlm: (provider: LlmProviderConfig) =>
     invoke<LlmTestResult>("test_llm", { provider }),
   generateReport: (
@@ -187,6 +214,16 @@ export const api = {
     request: ReportGenRequest,
   ) =>
     invoke<ReportGenResponse>("generate_report", {
+      provider,
+      request,
+    }),
+  generateReportStream: (
+    requestId: string,
+    provider: LlmProviderConfig,
+    request: ReportGenRequest,
+  ) =>
+    invoke<ReportGenResponse>("generate_report_stream", {
+      requestId,
       provider,
       request,
     }),
@@ -198,4 +235,30 @@ export const api = {
 // Events
 export function onK6Event(handler: (e: RunEvent) => void): Promise<UnlistenFn> {
   return listen<RunEvent>("k6://event", (event) => handler(event.payload));
+}
+
+// --- LLM streaming ----------------------------------------------------
+// `LlmStreamEvent` is the discriminated union emitted on the
+// `llm://chunk` channel. Each event is tagged with a `request_id` so the
+// frontend can interleave concurrent streams without confusion.
+
+export type LlmStreamEvent =
+  | { phase: "started"; request_id: string; model: string }
+  | { phase: "delta"; request_id: string; text: string }
+  | {
+      phase: "done";
+      request_id: string;
+      text: string;
+      model: string;
+      tokens_in: number | null;
+      tokens_out: number | null;
+    }
+  | { phase: "error"; request_id: string; message: string };
+
+export function onLlmStream(
+  handler: (e: LlmStreamEvent) => void,
+): Promise<UnlistenFn> {
+  return listen<LlmStreamEvent>("llm://chunk", (event) =>
+    handler(event.payload),
+  );
 }

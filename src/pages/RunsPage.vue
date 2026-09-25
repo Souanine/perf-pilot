@@ -28,6 +28,7 @@ import { useRunsStore, type LiveRun } from "@/stores/runs";
 import { useAppStore } from "@/stores/app";
 import { useToastStore } from "@/stores/toast";
 import { formatDuration, relativeTime } from "@/lib/utils";
+import { parseEnvLines, shellSplit } from "@/lib/shellSplit";
 
 const scripts = useScriptsStore();
 const runs = useRunsStore();
@@ -60,22 +61,18 @@ const envVars = computed({
 });
 
 function parseEnv(): Record<string, string> {
-  const out: Record<string, string> = {};
-  for (const line of envInput.value.split(/\n+/)) {
-    const trimmed = line.trim();
-    if (!trimmed) continue;
-    const eq = trimmed.indexOf("=");
-    if (eq === -1) continue;
-    out[trimmed.slice(0, eq).trim()] = trimmed.slice(eq + 1).trim();
-  }
-  return out;
+  // Tokenize via the same shell-aware splitter used by parseCli so
+  // `BASE_URL="https://x.com?a=1&b=2"` survives intact. The original
+  // naive `split(/\n+/)` would have chopped the value at whitespace
+  // inside the URL — silently dropping query params.
+  return parseEnvLines(envInput.value);
 }
 
 function parseCli(): string[] {
-  return cliArgs.value
-    .split(/\s+/)
-    .map((s) => s.trim())
-    .filter(Boolean);
+  // Naive `split(/\s+/)` broke quoted args (`--label="a b"`) and any
+  // URL with a query string. The shell-aware tokenizer handles
+  // single, double, and unterminated quotes gracefully.
+  return shellSplit(cliArgs.value);
 }
 
 async function startRun() {
@@ -148,18 +145,34 @@ function statusBadge(s: string) {
 }
 
 // Reactive tick so running-run elapsed time updates every second while a run is in flight.
+// The timer only runs when at least one run is in flight; the `watch` on
+// `runs.running` arms and disarms it as work starts and finishes.
 const nowMs = ref(Date.now());
 let elapsedTimer: ReturnType<typeof setInterval> | null = null;
-onMounted(() => {
+function startElapsedTimer() {
+  if (elapsedTimer) return;
   elapsedTimer = setInterval(() => {
-    if (Object.values(runs.live).some((r) => !r.finished_at)) {
-      nowMs.value = Date.now();
-    }
+    // Only push updates if we still have a live run; harmless if not,
+    // but the early exit keeps the watch arming path simple.
+    if (runs.running.length === 0) return;
+    nowMs.value = Date.now();
   }, 1000);
-});
-onBeforeUnmount(() => {
-  if (elapsedTimer) clearInterval(elapsedTimer);
-});
+}
+function stopElapsedTimer() {
+  if (elapsedTimer) {
+    clearInterval(elapsedTimer);
+    elapsedTimer = null;
+  }
+}
+watch(
+  () => runs.running.length,
+  (n) => {
+    if (n > 0) startElapsedTimer();
+    else stopElapsedTimer();
+  },
+  { immediate: true },
+);
+onBeforeUnmount(stopElapsedTimer);
 
 function elapsed(r: LiveRun): string {
   if (!r.started_at) return "—";
@@ -191,7 +204,12 @@ onMounted(async () => {
           <div>
             <Label class="mb-1 block text-xs">{{ t('runs.scriptLabel') }}</Label>
             <div class="flex gap-1">
-              <Select class="flex-1" v-model="scriptPath" :options="scriptOptions" />
+              <Select
+              class="flex-1"
+              v-model="scriptPath"
+              :options="scriptOptions"
+              :aria-label="t('runs.scriptLabel')"
+            />
               <Button variant="outline" size="icon" @click="browseScript" :aria-label="t('common.browse')">
                 <Plus class="h-4 w-4" />
               </Button>

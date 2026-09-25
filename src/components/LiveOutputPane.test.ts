@@ -215,6 +215,24 @@ describe("LiveOutputPane", () => {
     await nextTick();
     expect(wrapper.find("button").exists()).toBe(true);
   });
+
+  it("renders an overflow banner when lines exceeds renderWindow", () => {
+    const lines = Array.from({ length: 20 }, (_, i) => `line ${i}`);
+    const wrapper = mountPane({ lines, renderWindow: 5 });
+    const text = wrapper.find("pre").text();
+    expect(text).toContain("15 earlier lines dropped");
+    expect(text).toContain("line 19");
+    // Earlier lines should not appear in the DOM.
+    expect(text).not.toContain("line 0");
+  });
+
+  it("does not render an overflow banner when lines fits in renderWindow", () => {
+    const wrapper = mountPane({
+      lines: ["a", "b", "c"],
+      renderWindow: 50,
+    });
+    expect(wrapper.find("pre").text()).not.toContain("earlier lines dropped");
+  });
 });
 
 // Minimal vi.fn shim — vitest provides this globally but we want the

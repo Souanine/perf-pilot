@@ -229,4 +229,17 @@ describe("runs store", () => {
     await new Promise((r) => setTimeout(r, 0));
     expect(api.listRuns as unknown as ReturnType<typeof vi.fn>).toHaveBeenCalled();
   });
+
+  it("stdout/stderr lines are capped so long runs don't blow up the DOM", async () => {
+    // Push 2500 stdout lines; the live buffer should retain only the
+    // most recent 2000 (matches MAX_LIVE_OUTPUT_LINES in runs.ts).
+    const runs = useRunsStore();
+    const id = await runs.start("/x.js", {});
+    for (let i = 0; i < 2500; i += 1) {
+      fakeStream.__emit(stdout(id, `line ${i}`));
+    }
+    expect(runs.live[id].stdout_lines.length).toBe(2000);
+    expect(runs.live[id].stdout_lines[0]).toBe("line 500");
+    expect(runs.live[id].stdout_lines.at(-1)).toBe("line 2499");
+  });
 });

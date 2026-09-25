@@ -61,3 +61,29 @@ npm run tauri:dev          # launches the desktop app
 ```bash
 npm run tauri:build
 ```
+
+## Tests
+
+Three layers, each with a different scope:
+
+| Layer | Command | What it covers |
+|---|---|---|
+| Vue component / Pinia store | `npm run test` | Pure logic; jsdom |
+| Rust backend | `cargo test --lib` (from `src-tauri/`) | k6 parser, SSE parser, index helpers |
+| End-to-end (browser) | `npm run test:e2e` | Real Vue + Pinia + Router against the Vite dev server, with Tauri IPC stubbed via `window.__TAURI_INTERNALS__` |
+
+The e2e suite needs a browser binary. After a fresh install:
+
+```bash
+npx playwright install chromium
+npm run test:e2e
+```
+
+Layout under `e2e/`:
+
+- `playwright.config.ts` — config (boots the Vite dev server, runs chromium headless)
+- `mock-tauri.ts` — IPC shim, including the full `@tauri-apps/plugin-store` protocol
+- `fixtures.ts` / `helpers.ts` — fixtures + page helpers
+- `tests/*.spec.ts` — specs grouped by area (navigation, dashboard, runs, history, settings, ai-generate, theme+locale)
+
+The e2e suite intentionally drives the Vite dev server (not the Tauri binary) — it covers Vue/Pinia/router flows end-to-end, while real Rust behaviour is owned by `cargo test`. This keeps iteration under 10 seconds per spec instead of seconds-per-step WebDriver overhead.

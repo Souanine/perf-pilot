@@ -3,6 +3,7 @@ import { computed, ref, watch } from "vue";
 import { load as loadStore, type Store } from "@tauri-apps/plugin-store";
 import {
   i18n,
+  setActiveLocale,
   type Locale,
   SUPPORTED_LOCALES,
   detectLocale,
@@ -37,8 +38,14 @@ export const useLocaleStore = defineStore("locale", () => {
       // Fallback silently to the detected locale.
       console.warn("locale hydrate failed", e);
     } finally {
-      // Reflect in the i18n global.
-      i18n.global.locale.value = locale.value;
+      // Reflect in the i18n global — await so the bundle for the active
+      // locale is loaded before we declare ready (otherwise the UI
+      // briefly renders English strings while zh-CN chunks fetch).
+      try {
+        await setActiveLocale(locale.value);
+      } catch (e) {
+        console.warn("setActiveLocale failed", e);
+      }
       ready.value = true;
     }
   }
@@ -46,7 +53,7 @@ export const useLocaleStore = defineStore("locale", () => {
   async function setLocale(next: Locale) {
     if (!SUPPORTED_LOCALES.includes(next)) return;
     locale.value = next;
-    i18n.global.locale.value = next;
+    await setActiveLocale(next).catch((e) => console.warn("setActiveLocale failed", e));
     try {
       const s = await getStore();
       await s.set(KEY_LOCALE, next);
@@ -61,9 +68,11 @@ export const useLocaleStore = defineStore("locale", () => {
   }
 
   // Persist any local flips (in case setLocale was awaited in a race).
+  // `flush: 'post'` defers until after the DOM has had a chance to
+  // update — keeps reactive UI responsive when toggling rapidly.
   watch(locale, (v) => {
-    i18n.global.locale.value = v;
-  });
+    setActiveLocale(v).catch(() => {});
+  }, { flush: 'post' });
 
   return {
     locale,

@@ -25,13 +25,32 @@ export interface LiveRun {
   error?: string | null;
 }
 
+/**
+ * Hard cap on how many stdout/stderr lines we keep in the live buffer.
+ *
+ * k6 emits a progress line roughly every 1–2s; a 30-minute soak pushes
+ * 15k+ lines through the buffer. Capping here protects the renderer
+ * (each line is one DOM node in the live pane) and the IPC payload when
+ * the run is finished and the buffer is serialised back to the front end.
+ * The full output is still persisted to disk by Rust, so a finished run
+ * never loses detail — only the live tail viewer truncates.
+ */
+const MAX_LIVE_OUTPUT_LINES = 2000;
+
+/** k6 allows concurrent runs, so two `runs.start()` calls inside the same
+ *  millisecond would otherwise risk an ID collision with the old
+ *  `Date.now() + Math.random()` scheme. crypto.randomUUID is available
+ *  in every WebView Tauri 2 ships and gives 122 bits of entropy. */
 function genId() {
-  return (
-    "r-" +
-    Date.now().toString(36) +
-    "-" +
-    Math.random().toString(36).slice(2, 8)
-  );
+  return "r-" + crypto.randomUUID();
+}
+
+/** Push onto an array but evict the oldest entries past the cap. */
+function pushCapped(arr: string[], line: string, cap: number) {
+  arr.push(line);
+  if (arr.length > cap) {
+    arr.splice(0, arr.length - cap);
+  }
 }
 
 /** Apply a single event to its live run row. Extracted so `start()` can
@@ -44,10 +63,10 @@ function applyEventToLive(run: LiveRun, ev: RunEvent) {
       run.k6_version = ev.k6_version;
       break;
     case "stdout":
-      run.stdout_lines.push(ev.line);
+      pushCapped(run.stdout_lines, ev.line, MAX_LIVE_OUTPUT_LINES);
       break;
     case "stderr":
-      run.stderr_lines.push(ev.line);
+      pushCapped(run.stderr_lines, ev.line, MAX_LIVE_OUTPUT_LINES);
       break;
     case "metric":
       run.metrics[ev.metric.name] = ev.metric.value;

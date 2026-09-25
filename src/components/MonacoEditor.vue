@@ -15,6 +15,8 @@ import tsWorker from "monaco-editor/esm/vs/language/typescript/ts.worker?worker"
   },
 };
 
+import { planMonacoSync } from "@/lib/monacoSync";
+
 const props = withDefaults(
   defineProps<{
     modelValue: string;
@@ -32,6 +34,14 @@ const emit = defineEmits<{
 
 const hostRef = ref<HTMLDivElement | null>(null);
 let editor: monaco.editor.IStandaloneCodeEditor | null = null;
+
+/**
+ * Set while *we* are mutating the editor from a `props.modelValue`
+ * watch. Without this guard the change event Monaco emits in response
+ * to our edit would round-trip back through `emit("update:modelValue")`
+ * and re-enter this watcher, looping until the user blinked.
+ */
+let internalChange = false;
 
 onMounted(() => {
   if (!hostRef.value) return;
@@ -55,6 +65,7 @@ onMounted(() => {
   });
 
   editor.onDidChangeModelContent(() => {
+    if (internalChange) return;
     if (!editor) return;
     const val = editor.getValue();
     if (val !== props.modelValue) emit("update:modelValue", val);
@@ -64,7 +75,42 @@ onMounted(() => {
 watch(
   () => props.modelValue,
   (val) => {
-    if (editor && editor.getValue() !== val) editor.setValue(val);
+    if (!editor) return;
+    const current = editor.getValue();
+    const action = planMonacoSync(current, val);
+    if (action.kind === "noop") return;
+    internalChange = true;
+    try {
+      if (action.kind === "append") {
+        // Streaming path: append the delta at EOF in a single edit so
+        // cursor position and per-edit undo history survive each chunk.
+        const model = editor.getModel();
+        if (!model) {
+          editor.setValue(val);
+          return;
+        }
+        const lineCount = model.getLineCount();
+        const lastCol = model.getLineMaxColumn(lineCount);
+        const range = {
+          startLineNumber: lineCount,
+          startColumn: lastCol,
+          endLineNumber: lineCount,
+          endColumn: lastCol,
+        };
+        editor.executeEdits("external-stream", [
+          { range, text: action.delta, forceMoveMarkers: true },
+        ]);
+        // Group all streaming chunks into a single undo entry — one
+        // Ctrl+Z while editing undoes the whole streamed text rather
+        // than one chunk at a time.
+        editor.pushUndoStop();
+      } else {
+        // Full reset (e.g. switching to a freshly generated script).
+        editor.setValue(action.value);
+      }
+    } finally {
+      internalChange = false;
+    }
   },
 );
 

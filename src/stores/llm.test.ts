@@ -1,6 +1,29 @@
-import { describe, it, expect, beforeEach } from "vitest";
+import { describe, it, expect, beforeEach, vi } from "vitest";
 import { setActivePinia, createPinia } from "pinia";
 import { useLLMStore, migrateProvider } from "@/stores/llm";
+
+const storeApi = vi.hoisted(() => {
+  return {
+    saveCount: 0,
+    setCount: 0,
+  };
+});
+
+vi.mock("@tauri-apps/plugin-store", () => {
+  const handle = {
+    get: vi.fn(async () => undefined),
+    set: vi.fn(async () => {
+      storeApi.setCount += 1;
+    }),
+    save: vi.fn(async () => {
+      storeApi.saveCount += 1;
+    }),
+  };
+  return {
+    load: vi.fn(async () => handle),
+    __handle: handle,
+  };
+});
 
 describe("migrateProvider (legacy → new shape)", () => {
   it("upgrades an OpenAI legacy config", () => {
@@ -229,5 +252,51 @@ describe("useLLMStore (new shape)", () => {
     expect(llm.active.model).toBe("brand-new-model-id");
     expect(llm.active.models.length).toBe(beforeCount + 1);
     expect(llm.active.models.find((m) => m.id === "brand-new-model-id")).toBeDefined();
+  });
+
+  it("schedules a debounced persist for batched edits", async () => {
+    vi.useFakeTimers();
+    try {
+      const llm = useLLMStore();
+      // First call triggers a lazy hydrate (which itself touches the
+      // handle), so zero counters here.
+      await llm.hydrate();
+      const saveBefore = storeApi.saveCount;
+      const id = llm.activeId;
+
+      // Rapid burst of edits — five keystrokes would otherwise be five
+      // disk writes.
+      for (let i = 0; i < 5; i += 1) {
+        await llm.updateProvider(id, { base_url: `https://api${i}.local/v1` });
+      }
+
+      // Inside the debounce window, no save() has fired yet.
+      expect(storeApi.saveCount).toBe(saveBefore);
+
+      // Advance past the debounce and let the pending timer fire.
+      await vi.advanceTimersByTimeAsync(350);
+
+      expect(storeApi.saveCount).toBe(saveBefore + 1);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it("flushPersist drains a pending write immediately", async () => {
+    vi.useFakeTimers();
+    try {
+      const llm = useLLMStore();
+      await llm.hydrate();
+      const saveBefore = storeApi.saveCount;
+
+      const id = llm.activeId;
+      await llm.updateProvider(id, { base_url: "https://flushed.local/v1" });
+      expect(storeApi.saveCount).toBe(saveBefore);
+
+      await llm.flushPersist();
+      expect(storeApi.saveCount).toBe(saveBefore + 1);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 });

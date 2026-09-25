@@ -27,8 +27,12 @@ const props = withDefaults(
     placeholder?: string;
     /** Distance from the bottom (px) that still counts as "near bottom". */
     nearBottomPx?: number;
+    /** How many trailing lines to actually render. Older lines are
+     *  collapsed into a "(N earlier lines)" notice to keep the DOM
+     *  size bounded on long runs. */
+    renderWindow?: number;
   }>(),
-  { tone: "stdout", placeholder: "", nearBottomPx: 32 },
+  { tone: "stdout", placeholder: "", nearBottomPx: 32, renderWindow: 500 },
 );
 
 const scroller = ref<HTMLPreElement | null>(null);
@@ -135,6 +139,20 @@ const toneClass = computed(() => {
       return "bg-black/95 text-emerald-100";
   }
 });
+
+/**
+ * Windowed rendering: only the trailing `renderWindow` lines get a real
+ * DOM node. Older lines are summarised into a single overflow banner.
+ * `slice(-N)` is O(N) but N is bounded by the cap in `useRunsStore`, so
+ * worst case is 2000 element copy on each new chunk — well below the
+ * cost of mounting thousands of `<span>` elements into the live tree.
+ */
+const overflow = computed(() =>
+  Math.max(0, props.lines.length - props.renderWindow),
+);
+const visibleLines = computed(() =>
+  props.lines.slice(-props.renderWindow),
+);
 </script>
 
 <template>
@@ -146,11 +164,14 @@ const toneClass = computed(() => {
       @scroll.passive="onScroll"
       tabindex="0"
     ><span
-      v-for="(l, i) in lines"
-      :key="i"
+      v-if="overflow > 0"
+      class="block border-b border-current/10 pb-1 text-current/40"
+    >[… {{ overflow }} earlier lines dropped from view (still in buffer) …]</span><span
+      v-for="(l, i) in visibleLines"
+      :key="overflow + i"
       class="block"
     >{{ l }}</span><span
-      v-if="!lines.length && placeholder"
+      v-if="!visibleLines.length && !overflow && placeholder"
       class="block text-current/40"
     >{{ placeholder }}</span></pre>
 

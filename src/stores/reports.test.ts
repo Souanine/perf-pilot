@@ -12,6 +12,10 @@ vi.mock("@/lib/tauri", () => {
       readReport: vi.fn(),
       deleteReport: vi.fn(),
       generateReport: vi.fn(),
+      // New: streaming report generation. The store routes through it now;
+      // tests that exercise the success path mock this, the failure path
+      // mocks the rejection here.
+      generateReportStream: vi.fn(),
     },
   };
 });
@@ -22,6 +26,7 @@ const mockedApi = api as unknown as {
   readReport: ReturnType<typeof vi.fn>;
   deleteReport: ReturnType<typeof vi.fn>;
   generateReport: ReturnType<typeof vi.fn>;
+  generateReportStream: ReturnType<typeof vi.fn>;
 };
 
 describe("useReportsStore", () => {
@@ -100,11 +105,18 @@ describe("useReportsStore", () => {
       tokens_in: 10,
       tokens_out: 20,
     });
+    mockedApi.generateReportStream.mockResolvedValueOnce({
+      report: "# Report\n\nOK.",
+      model: "gpt-x",
+      tokens_in: 10,
+      tokens_out: 20,
+    });
 
     const store = useReportsStore();
     const resp = await store.generate("r1");
     expect(resp?.model).toBe("gpt-x");
-    expect(mockedApi.generateReport).toHaveBeenCalledWith(
+    expect(mockedApi.generateReportStream).toHaveBeenCalledWith(
+      expect.any(String),
       expect.objectContaining({ model: "gpt-x" }),
       expect.objectContaining({ run_id: "r1", locale: "en" }),
     );
@@ -123,6 +135,7 @@ describe("useReportsStore", () => {
     expect(resp).toBeNull();
     expect(store.errorFor("r1")).toMatch(/No active LLM/);
     expect(mockedApi.generateReport).not.toHaveBeenCalled();
+    expect(mockedApi.generateReportStream).not.toHaveBeenCalled();
   });
 
   it("generate() records errors and clears the busy flag", async () => {
@@ -143,6 +156,7 @@ describe("useReportsStore", () => {
     llm.activeId = "openai";
     useLocaleStore();
     mockedApi.generateReport.mockRejectedValueOnce(new Error("HTTP 502"));
+    mockedApi.generateReportStream.mockRejectedValueOnce(new Error("HTTP 502"));
 
     const store = useReportsStore();
     const resp = await store.generate("r1");

@@ -8,6 +8,8 @@ const props = defineProps<{
   placeholder?: string;
   disabled?: boolean;
   required?: boolean;
+  /** Accessible name; used when no <label> is associated via `for`. */
+  ariaLabel?: string;
 }>();
 const emit = defineEmits<{
   (e: "update:modelValue", value: string): void;
@@ -30,6 +32,7 @@ const cls = computed(() =>
     :placeholder="placeholder"
     :disabled="disabled"
     :required="required"
+    :aria-label="ariaLabel"
     @input="emit('update:modelValue', ($event.target as HTMLInputElement).value)"
     @blur="emit('blur')"
     @focus="emit('focus')"

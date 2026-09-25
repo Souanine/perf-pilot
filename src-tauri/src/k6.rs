@@ -4,7 +4,7 @@ use regex::Regex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::process::Stdio;
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::{Arc, LazyLock, Mutex as StdMutex};
 use tauri::Emitter;
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
@@ -114,6 +114,10 @@ pub(crate) struct RunConclude {
     pub(crate) error: Option<String>,
     pub(crate) stdout: String,
     pub(crate) stderr: String,
+    /// Metrics already collected by the streaming phase. `conclude_run`
+    /// no longer needs to re-scan stdout — these are the same `Metric`
+    /// events that were streamed live to the UI.
+    pub(crate) metrics: Vec<MetricSummary>,
 }
 
 impl K6Runner {
@@ -313,20 +317,24 @@ impl K6Runner {
             None
         };
 
-        // Cancel watcher: when cancel fires, kill the child best-effort.
+        // Race the cancel signal against the child's natural exit. Whoever
+        // fires first wins:
+        //   * cancel → kill the child best-effort, then await its exit.
+        //   * natural exit → cancel_rx is dropped here and the task that
+        //     held it can finally resolve, so no JoinHandle is leaked.
         let cancel_child_id = child.id();
-        let cancel_task = tauri::async_runtime::spawn(async move {
-            let _ = cancel_rx.await;
-            if let Some(pid) = cancel_child_id {
-                let _ = std::process::Command::new("kill")
-                    .arg("-TERM")
-                    .arg(pid.to_string())
-                    .output();
+        let status = tokio::select! {
+            _ = cancel_rx => {
+                if let Some(pid) = cancel_child_id {
+                    let _ = std::process::Command::new("kill")
+                        .arg("-TERM")
+                        .arg(pid.to_string())
+                        .output();
+                }
+                child.wait().await
             }
-        });
-        let _cancel_task = cancel_task;
-
-        let status = child.wait().await;
+            s = child.wait() => s,
+        };
         if let Some(t) = stdout_task {
             let _ = t.await;
         }
@@ -360,6 +368,13 @@ impl K6Runner {
 
         let stdout_text = stdout_buf.lock().unwrap().clone();
         let stderr_text = stderr_buf.lock().unwrap().clone();
+        // `metrics_acc` was populated by the streaming stdout task. We
+        // dedup by name (same rule the old `parse_metrics` followed) so
+        // k6's tendency to emit both a summary block and a final
+        // end-of-run block doesn't double-count.
+        let mut metrics = metrics_acc.lock().unwrap().clone();
+        let mut seen = std::collections::HashSet::new();
+        metrics.retain(|m| seen.insert(m.name.clone()));
 
         RunConclude {
             status: status_str,
@@ -367,6 +382,7 @@ impl K6Runner {
             error,
             stdout: stdout_text,
             stderr: stderr_text,
+            metrics,
         }
     }
 
@@ -397,8 +413,6 @@ impl K6Runner {
             }
         };
         let out_path = runs_dir.join(format!("{}.json", run_id));
-        let stdout_for_parse = conclusion.stdout.clone();
-        let metrics = parse_metrics(&stdout_for_parse);
         let output = RunOutput {
             run_id: run_id.to_string(),
             script_path,
@@ -409,12 +423,30 @@ impl K6Runner {
             status: conclusion.status,
             stdout: conclusion.stdout,
             stderr: conclusion.stderr,
-            metrics,
+            metrics: conclusion.metrics,
             error: conclusion.error,
         };
         if let Ok(json) = serde_json::to_string_pretty(&output) {
             let _ = std::fs::write(&out_path, json);
         }
+
+        // Mirror the run's metadata into the sidecar index so
+        // `list_runs` doesn't have to scan + parse every per-run JSON.
+        let (p95_ms, rps, error_rate_pct) =
+            crate::fs::extract_chart_metrics(&output.stdout);
+        let index_record = crate::fs::RunRecord {
+            run_id: run_id.to_string(),
+            label: output.label.clone(),
+            status: output.status.clone(),
+            started_at: output.started_at,
+            finished_at: output.finished_at,
+            exit_code: output.exit_code,
+            script_path: output.script_path.clone(),
+            p95_ms,
+            rps,
+            error_rate_pct,
+        };
+        let _ = crate::fs::upsert_run_index(app_handle, &index_record).await;
 
         // Drop the runner from the in-memory list.
         let mut guard = match runners.try_lock() {
@@ -494,51 +526,51 @@ fn read_k6_version(path: &str) -> Result<String, String> {
 /// Parse one summary metric from a k6 summary line.
 /// k6 prints rows like:
 ///   http_req_duration..............: avg=120.45ms min=80ms med=110ms max=300ms p(90)=180ms p(95)=210ms
+
+/// Static regexes for the summary parser. Compiling a `Regex` walks the
+/// pattern string every call; a 30s soak pushing 5k summary-adjacent lines
+/// through `parse_metric` would otherwise compile the same patterns
+/// thousands of times. `LazyLock` initialises them once on first use.
+static METRIC_LINE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^(?P<name>[a-zA-Z0-9_]+)\s*\.+\s*:\s*(?P<body>.+)$").unwrap()
+});
+static VALUE_KV: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?P<k>[a-zA-Z0-9_]+)=(?P<v>[0-9eE\.\-\+nanNaN]+)(?P<u>[a-zA-Z%µμ/]*)")
+        .unwrap()
+});
+static VALUE_COL: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"^\s*(?P<v>\S+)(?:\s+(?P<u>[a-zA-Z%/µμ]+))?").unwrap()
+});
+
 fn parse_metric(line: &str) -> Option<MetricSummary> {
     // Quick filter: k6 metric rows always have "..." padding after the metric name.
     if !line.contains("...") {
         return None;
     }
-    let re = Regex::new(r"^(?P<name>[a-zA-Z0-9_]+)\s*\.+\s*:\s*(?P<body>.+)$").ok()?;
-    let caps = re.captures(line.trim())?;
+    let caps = METRIC_LINE.captures(line.trim())?;
     let name = caps.name("name")?.as_str().to_string();
     let body = caps.name("body")?.as_str();
 
-    let value_re = Regex::new(r"(?P<k>[a-zA-Z0-9_]+)=(?P<v>[0-9eE\.\-\+nanNaN]+)(?P<u>[a-zA-Z%µμ/]*)").ok()?;
     let mut val = String::new();
     let mut unit: Option<String> = None;
 
-    if let Some(cap) = value_re.captures(body) {
+    if let Some(cap) = VALUE_KV.captures(body) {
         // key=value style (e.g. http_req_duration: avg=120ms ...)
         let first_key = cap.name("k").unwrap().as_str();
         if first_key == "count" {
             val = cap.name("v").unwrap().as_str().to_string();
             unit = cap.name("u").map(|m| m.as_str().to_string()).filter(|s| !s.is_empty());
         } else {
-            // Try avg=
-            let chosen = value_re
-                .captures(body)
-                .and_then(|c| c.name("avg").map(|m| m.as_str().to_string()))
-                .or_else(|| {
-                    value_re
-                        .captures(body)
-                        .map(|c| c.name("v").unwrap().as_str().to_string())
-                });
-            if let Some(v) = chosen {
-                val = v;
-            } else {
-                val = cap.name("v").unwrap().as_str().to_string();
-            }
+            // No "avg" group exists; pick `avg=…` first by scanning the
+            // value column once. Falls back to the first matched number.
+            val = pick_preferred_value(body).unwrap_or_else(|| cap.name("v").unwrap().as_str().to_string());
             unit = cap.name("u").map(|m| m.as_str().to_string()).filter(|s| !s.is_empty());
         }
-    } else {
+    } else if let Some(c) = VALUE_COL.captures(body) {
         // Column-based: name..............: value unit  rate
         // First whitespace-separated token is the value.
-        let col_re = Regex::new(r"^\s*(?P<v>\S+)(?:\s+(?P<u>[a-zA-Z%/µμ]+))?").ok()?;
-        if let Some(c) = col_re.captures(body) {
-            val = c.name("v").unwrap().as_str().to_string();
-            unit = c.name("u").map(|m| m.as_str().to_string()).filter(|s| !s.is_empty());
-        }
+        val = c.name("v").unwrap().as_str().to_string();
+        unit = c.name("u").map(|m| m.as_str().to_string()).filter(|s| !s.is_empty());
     }
 
     if val.is_empty() {
@@ -550,6 +582,26 @@ fn parse_metric(line: &str) -> Option<MetricSummary> {
         value: format!("{}{}", val, unit.clone().unwrap_or_default()),
         unit,
     })
+}
+
+/// Walk the body left-to-right, returning the value of the first `avg=…`
+/// token; otherwise the value of the very first `key=value` token. The
+/// original regex had a dead `name("avg")` lookup (no such group exists)
+/// which always fell through to the `v` branch — fixing the obvious bug
+/// while keeping the same observable output for the test fixture.
+fn pick_preferred_value(body: &str) -> Option<String> {
+    let mut first: Option<String> = None;
+    for cap in VALUE_KV.captures_iter(body) {
+        let k = cap.name("k").unwrap().as_str();
+        let v = cap.name("v").unwrap().as_str().to_string();
+        if first.is_none() {
+            first = Some(v.clone());
+        }
+        if k == "avg" {
+            return Some(v);
+        }
+    }
+    first
 }
 
 /// Parse all metrics from the full stdout buffer.

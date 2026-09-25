@@ -14,6 +14,8 @@ const props = withDefaults(
     class?: string;
     placeholder?: string;
     disabled?: boolean;
+    /** Forwarded to the underlying <select> for screen readers. */
+    ariaLabel?: string;
   }>(),
   { modelValue: "" },
 );
@@ -31,6 +33,7 @@ const cls = computed(() =>
     :class="cls"
     :value="modelValue"
     :disabled="disabled"
+    :aria-label="ariaLabel"
     @change="emit('update:modelValue', ($event.target as HTMLSelectElement).value)"
   >
     <option v-if="placeholder" value="" disabled hidden>{{ placeholder }}</option>

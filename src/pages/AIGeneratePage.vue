@@ -35,6 +35,10 @@ import { useUiStore } from "@/stores/ui";
 import { useToastStore } from "@/stores/toast";
 import { useAppStore } from "@/stores/app";
 import { api, type LlmProviderConfig, type ScriptGenResponse, type ChatMessage } from "@/lib/tauri";
+import {
+  newStreamRequestId,
+  startLlmStream,
+} from "@/composables/useLlmStream";
 
 const llm = useLLMStore();
 const scripts = useScriptsStore();
@@ -113,14 +117,37 @@ async function generate() {
   }
   generating.value = true;
   lastError.value = null;
+  // Reset history if this is a brand-new generation (no prior script).
+  if (!result.value) {
+    history.value = [];
+    tokenTotals.value = { in: 0, out: 0 };
+  }
+  history.value.push({ role: "user", content: prompt.value });
+
+  // Subscribe to the chunk stream BEFORE firing the IPC so we never lose
+  // the first delta. The composable dedupes if a previous subscription
+  // already exists.
+  const requestId = newStreamRequestId();
+  let assembled = "";
+  let streamModel = activeProvider.value.model;
+  const controller = await startLlmStream(requestId, (chunk) => {
+    assembled += chunk;
+    // Mirror the streamed script into the Monaco editor live. We keep the
+    // existing `result.value` if any so model/explanation aren't wiped on
+    // every chunk.
+    const prev = result.value;
+    result.value = {
+      script: assembled,
+      explanation: prev?.explanation ?? null,
+      model: prev?.model ?? streamModel,
+      tokens_in: prev?.tokens_in ?? null,
+      tokens_out: prev?.tokens_out ?? null,
+    };
+  });
+
   try {
-    // Reset history if this is a brand-new generation (no prior script).
-    if (!result.value) {
-      history.value = [];
-      tokenTotals.value = { in: 0, out: 0 };
-    }
-    history.value.push({ role: "user", content: prompt.value });
-    const r = await api.generateScript(
+    const r = await api.generateScriptStream(
+      requestId,
       activeProvider.value,
       {
         prompt: prompt.value,
@@ -133,7 +160,7 @@ async function generate() {
     result.value = r;
     tokenTotals.value.in += r.tokens_in ?? 0;
     tokenTotals.value.out += r.tokens_out ?? 0;
-  toast.push({
+    toast.push({
       title: t('ai.saved'),
       description: `${r.tokens_in ?? "?"} in / ${r.tokens_out ?? "?"} out`,
       variant: "success",
@@ -146,6 +173,7 @@ async function generate() {
       variant: "destructive",
     });
   } finally {
+    controller.cancel();
     generating.value = false;
   }
 }
@@ -162,9 +190,25 @@ async function refine() {
   }
   refining.value = true;
   lastError.value = null;
+  history.value.push({ role: "user", content: refinement.value });
+
+  const requestId = newStreamRequestId();
+  let assembled = "";
+  const controller = await startLlmStream(requestId, (chunk) => {
+    assembled += chunk;
+    const prev = result.value;
+    result.value = {
+      script: assembled,
+      explanation: prev?.explanation ?? null,
+      model: prev?.model ?? activeProvider.value.model,
+      tokens_in: prev?.tokens_in ?? null,
+      tokens_out: prev?.tokens_out ?? null,
+    };
+  });
+
   try {
-    history.value.push({ role: "user", content: refinement.value });
-    const r = await api.generateScript(
+    const r = await api.generateScriptStream(
+      requestId,
       activeProvider.value,
       { prompt: refinement.value, hint: "", base_url: baseUrl.value || undefined },
       history.value.slice(0, -1),
@@ -187,6 +231,7 @@ async function refine() {
       variant: "destructive",
     });
   } finally {
+    controller.cancel();
     refining.value = false;
   }
 }
@@ -335,7 +380,7 @@ function fillExample(kind: string) {
             <div class="flex flex-wrap items-center gap-2 text-xs text-muted-foreground">
               <span class="font-medium text-foreground">{{ activeProvider.name || t('ai.noModel') }}</span>
               <span>·</span>
-              <code class="rounded bg-muted px-1.5 py-0.5 text-[10px]">
+              <code class="rounded bg-muted px-1.5 py-0.5 text-[10px] text-foreground">
                 {{ formatLabel[activeProvider.api_format] }} · {{ formatEndpoint[activeProvider.api_format] }}
               </code>
               <span>·</span>
@@ -354,6 +399,7 @@ function fillExample(kind: string) {
                 :modelValue="activeProvider.model"
                 :options="modelOptions"
                 :disabled="modelOptions.length === 0"
+                :aria-label="t('ai.modelLabel')"
                 @update:modelValue="llm.setActiveModel($event)"
               />
             </div>

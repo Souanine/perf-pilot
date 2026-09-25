@@ -9,6 +9,18 @@ export interface ScriptBuffer {
   dirty: boolean;
 }
 
+/** Build the same `ScriptFile` shape the backend would return, so we can
+ *  patch the in-memory list after a save/saveAs/remove without a network
+ *  round-trip. */
+function fileEntry(path: string, content: string, modified_at: string): ScriptFile {
+  return {
+    path,
+    name: path.split(/[\\/]/).pop() ?? path,
+    size: content.length,
+    modified_at,
+  };
+}
+
 export const useScriptsStore = defineStore("scripts", () => {
   const files = ref<ScriptFile[]>([]);
   const buffers = ref<ScriptBuffer[]>([]);
@@ -61,12 +73,26 @@ export const useScriptsStore = defineStore("scripts", () => {
     buf.dirty = true;
   }
 
+  /** Update (or insert) the file metadata entry in-place after a write.
+   *  Avoids the cost of a full `listScripts` round-trip after every save. */
+  function upsertFile(path: string, content: string, modified_at: string) {
+    const idx = files.value.findIndex((f) => f.path === path);
+    const entry = fileEntry(path, content, modified_at);
+    if (idx === -1) {
+      files.value.push(entry);
+    } else {
+      files.value[idx] = entry;
+    }
+    // Keep newest first so the UI ordering matches what `refresh` would do.
+    files.value.sort((a, b) => b.modified_at.localeCompare(a.modified_at));
+  }
+
   async function save(path: string): Promise<void> {
     const buf = buffers.value.find((b) => b.filePath === path);
     if (!buf) return;
     await api.writeScript(path, buf.content);
     buf.dirty = false;
-    await refresh();
+    upsertFile(path, buf.content, new Date().toISOString());
   }
 
   async function saveAs(path: string, content: string): Promise<string> {
@@ -80,14 +106,14 @@ export const useScriptsStore = defineStore("scripts", () => {
       buffers.value[idx] = buf;
     }
     activePath.value = path;
-    await refresh();
+    upsertFile(path, content, new Date().toISOString());
     return path;
   }
 
   async function remove(path: string): Promise<void> {
     await api.deleteScript(path);
     closeBuffer(path);
-    await refresh();
+    files.value = files.value.filter((f) => f.path !== path);
   }
 
   return {

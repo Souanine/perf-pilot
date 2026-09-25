@@ -278,7 +278,7 @@ pub async fn generate_report(
 }
 
 /// System prompt for the report-generation LLM call.
-fn build_report_system_prompt(locale: &str) -> String {
+pub(crate) fn build_report_system_prompt(locale: &str) -> String {
     let language_directive = match locale {
         "zh" | "zh-CN" | "zh-Hans" | "zh-Hans-CN" => {
             " Write the entire report in 简体中文 (Simplified Chinese)."
@@ -320,7 +320,7 @@ Cite metric values inline (e.g. "p(95) = 412ms" vs "high latency")."#
 /// has to analyze. We send the raw k6 summary tail (the lines after
 /// `scenarios'`) so the model can quote thresholds and group metrics without
 /// us having to re-parse them.
-fn build_report_user_prompt(run: &RunOutput) -> String {
+pub(crate) fn build_report_user_prompt(run: &RunOutput) -> String {
     let mut s = String::new();
     s.push_str("Analyze this completed k6 run and produce the Markdown report.\n\n");
 
@@ -395,7 +395,7 @@ fn tail_lines(text: &str, n: usize) -> String {
 
 /// Extract the first fenced ```markdown``` (or generic) block from the LLM
 /// response. Falls back to the raw text if no fence is present.
-fn extract_markdown(text: &str) -> String {
+pub(crate) fn extract_markdown(text: &str) -> String {
     // Reuse the script fence extractor — it handles both properly fenced and
     // unterminated LLM responses the same way, and it's the same kind of
     // "recover the actual artifact from chat noise" job.
@@ -407,7 +407,7 @@ fn extract_markdown(text: &str) -> String {
 }
 
 /// Dispatch a chat completion to the appropriate provider implementation.
-async fn dispatch_chat(
+pub(crate) async fn dispatch_chat(
     provider: &LlmProviderConfig,
     messages: &[ChatMessage],
 ) -> anyhow::Result<(String, String, Option<u32>, Option<u32>)> {
@@ -665,7 +665,7 @@ async fn anthropic_chat(
     Ok((content, model, tin, tout))
 }
 
-fn system_prompt() -> &'static str {
+pub(crate) fn system_prompt() -> &'static str {
     r#"You are PerfPilot, an expert k6 performance test author. You translate natural-language scenarios into runnable k6 (JavaScript) scripts.
 
 Rules:
@@ -684,7 +684,7 @@ Rules:
 ///
 /// Tolerant of malformed responses — trims stray backticks / whitespace from
 /// the body so a missing closing fence still produces a runnable script.
-fn extract_script_and_explanation(text: &str) -> (String, Option<String>) {
+pub(crate) fn extract_script_and_explanation(text: &str) -> (String, Option<String>) {
     let mut script: Option<String> = None;
     let mut after: Vec<String> = Vec::new();
 

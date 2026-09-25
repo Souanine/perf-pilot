@@ -6,10 +6,12 @@ use tokio::sync::Mutex;
 pub mod fs;
 pub mod k6;
 pub mod llm;
+pub mod llm_stream;
 pub mod settings;
 
 use k6::{K6Info, K6Runner, RunOptions, RunOutput};
 use llm::{ChatMessage, LlmProviderConfig, ReportGenRequest, ReportGenResponse, ScriptGenRequest, ScriptGenResponse};
+use llm_stream::{generate_report_stream as do_generate_report_stream, generate_script_stream as do_generate_script_stream};
 
 /// Shared application state.
 pub struct AppState {
@@ -52,22 +54,22 @@ async fn ensure_dirs(app_handle: tauri::AppHandle) -> Result<(), String> {
 
 #[tauri::command]
 async fn list_scripts(app_handle: tauri::AppHandle) -> Result<Vec<fs::ScriptFile>, String> {
-    fs::list_scripts(&app_handle).map_err(|e| e.to_string())
+    fs::list_scripts(&app_handle).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn read_script(path: String) -> Result<String, String> {
-    fs::read_script(&path).map_err(|e| e.to_string())
+    fs::read_script(&path).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn write_script(app_handle: tauri::AppHandle, path: String, content: String) -> Result<(), String> {
-    fs::write_script(&app_handle, &path, &content).map_err(|e| e.to_string())
+    fs::write_script(&app_handle, &path, &content).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn delete_script(path: String) -> Result<(), String> {
-    fs::delete_script(&path).map_err(|e| e.to_string())
+    fs::delete_script(&path).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -121,17 +123,17 @@ async fn stop_k6(state: State<'_, AppState>, run_id: String) -> Result<bool, Str
 
 #[tauri::command]
 async fn list_runs(app_handle: tauri::AppHandle) -> Result<Vec<fs::RunRecord>, String> {
-    fs::list_runs(&app_handle).map_err(|e| e.to_string())
+    fs::list_runs(&app_handle).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn get_run_output(app_handle: tauri::AppHandle, run_id: String) -> Result<RunOutput, String> {
-    fs::load_run_output(&app_handle, &run_id).map_err(|e| e.to_string())
+    fs::load_run_output(&app_handle, &run_id).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 async fn delete_run(app_handle: tauri::AppHandle, run_id: String) -> Result<(), String> {
-    fs::delete_run(&app_handle, &run_id).map_err(|e| e.to_string())
+    fs::delete_run(&app_handle, &run_id).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -161,6 +163,7 @@ async fn generate_report(
     // Load the run snapshot from disk so we don't depend on the frontend
     // shipping metrics / error / timestamps through the IPC payload.
     let run = fs::load_run_output(&app_handle, &request.run_id)
+        .await
         .map_err(|e| format!("Run {} not found: {}", request.run_id, e))?;
     let locale = request.locale.as_deref().unwrap_or("en");
     let resp = llm::generate_report(&provider, &run, locale)
@@ -170,6 +173,7 @@ async fn generate_report(
     // Persist the report next to the run, so the History page can find it
     // without re-calling the LLM.
     fs::write_report(&app_handle, &request.run_id, &resp.report, Some(&resp.model))
+        .await
         .map_err(|e| e.to_string())?;
 
     Ok(resp)
@@ -177,12 +181,51 @@ async fn generate_report(
 
 #[tauri::command]
 async fn list_reports(app_handle: tauri::AppHandle) -> Result<Vec<fs::ReportRecord>, String> {
-    fs::list_reports(&app_handle).map_err(|e| e.to_string())
+    fs::list_reports(&app_handle).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
+async fn generate_script_stream(
+    window: tauri::Window,
+    request_id: String,
+    provider: LlmProviderConfig,
+    request: ScriptGenRequest,
+    history: Option<Vec<ChatMessage>>,
+) -> Result<ScriptGenResponse, String> {
+    let history = history.unwrap_or_default();
+    do_generate_script_stream(window, request_id, provider, request, history)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+async fn generate_report_stream(
+    window: tauri::Window,
+    app_handle: tauri::AppHandle,
+    request_id: String,
+    provider: LlmProviderConfig,
+    request: ReportGenRequest,
+) -> Result<ReportGenResponse, String> {
+    let run = fs::load_run_output(&app_handle, &request.run_id)
+        .await
+        .map_err(|e| format!("Run {} not found: {}", request.run_id, e))?;
+    let locale = request.locale.as_deref().unwrap_or("en").to_string();
+    let resp = do_generate_report_stream(window, request_id, provider, run, locale)
+        .await
+        .map_err(|e| e.to_string())?;
+    // Persist the report next to the run, same as the non-streaming path.
+    fs::write_report(&app_handle, &request.run_id, &resp.report, Some(&resp.model))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(resp)
+}
+
+// `list_reports` doesn't need an adapter; the helper was a dead end.
+
+
+#[tauri::command]
 async fn read_report(app_handle: tauri::AppHandle, run_id: String) -> Result<String, String> {
-    fs::read_report(&app_handle, &run_id).map_err(|e| e.to_string())
+    fs::read_report(&app_handle, &run_id).await.map_err(|e| e.to_string())
 }
 
 #[tauri::command]
@@ -205,11 +248,8 @@ async fn delete_report(app_handle: tauri::AppHandle, run_id: String) -> Result<(
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .plugin(tauri_plugin_os::init())
-        .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_fs::init())
-        .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_store::Builder::new().build())
         .setup(|app| {
             // Ensure data dirs exist on startup.
@@ -233,8 +273,10 @@ pub fn run() {
             get_run_output,
             delete_run,
             generate_script,
+            generate_script_stream,
             test_llm,
             generate_report,
+            generate_report_stream,
             list_reports,
             read_report,
             delete_report,

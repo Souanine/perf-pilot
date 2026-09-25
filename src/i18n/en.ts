@@ -55,6 +55,8 @@ export default {
     recentRunsTitle: "Recent runs",
     recentRunsDesc: "Your last few k6 test executions.",
     recentRunsEmpty: "No runs yet. Generate or write a script, then hit Run.",
+    trendsTitle: "Performance trends",
+    trendsDesc: "p(95), throughput and error rate across the last 20 runs. Stroke colour reflects whether the latest move is good or bad for the metric.",
     envTitle: "Environment",
     envDesc: "Local setup diagnostics.",
     envK6: "k6 binary",
@@ -228,6 +230,7 @@ export default {
     idLabel: "id",
     ago: "ago",
     durationFormat: (d: string) => d,
+    loadDetailFailed: "Could not load run details",
   },
   settings: {
     title: "LLM providers",

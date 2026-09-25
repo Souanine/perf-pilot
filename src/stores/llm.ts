@@ -7,6 +7,11 @@ const STORE_FILE = "perf-pilot.settings.json";
 const KEY_PROVIDERS = "llm.providers";
 const KEY_ACTIVE = "llm.active";
 
+/** Settings writes coalesce — typing in the LLM Settings form fires one
+ *  mutation per keystroke, and `watch(providers, …)` would otherwise
+ *  rewrite the whole JSON file on every change. */
+const PERSIST_DEBOUNCE_MS = 300;
+
 let storeHandle: Store | null = null;
 async function getStore(): Promise<Store> {
   if (!storeHandle) {
@@ -160,7 +165,7 @@ export const useLLMStore = defineStore("llm", () => {
     if (!p) return;
     if (!p.models.find((m) => m.id === modelId)) return;
     p.model = modelId;
-    persist();
+    schedulePersist();
   }
 
   async function updateProvider(id: string, patch: Partial<LlmProviderConfig>) {
@@ -172,7 +177,7 @@ export const useLLMStore = defineStore("llm", () => {
       next.models = [...next.models, { id: patch.model, label: patch.model }];
     }
     providers.value[idx] = next;
-    await persist();
+    schedulePersist();
   }
 
   async function addProvider(p: Omit<LlmProviderConfig, "id"> & { id?: string }) {
@@ -194,7 +199,7 @@ export const useLLMStore = defineStore("llm", () => {
     // Newly added providers become the active one — the user almost
     // always wants to try what they just added.
     activeId.value = id;
-    await persist();
+    schedulePersist();
   }
 
   async function removeProvider(id: string) {
@@ -202,7 +207,7 @@ export const useLLMStore = defineStore("llm", () => {
     if (activeId.value === id && providers.value.length > 0) {
       activeId.value = providers.value[0].id;
     }
-    await persist();
+    schedulePersist();
   }
 
   function addModel(providerId: string, model: LlmModelSpec) {
@@ -216,7 +221,7 @@ export const useLLMStore = defineStore("llm", () => {
     if (!p.model) {
       p.model = id;
     }
-    persist();
+    schedulePersist();
   }
 
   function removeModel(providerId: string, modelId: string) {
@@ -227,7 +232,7 @@ export const useLLMStore = defineStore("llm", () => {
       // Fall back to the first remaining model, or empty if none.
       p.model = p.models[0]?.id ?? "";
     }
-    persist();
+    schedulePersist();
   }
 
   async function persist() {
@@ -237,14 +242,49 @@ export const useLLMStore = defineStore("llm", () => {
     await s.save();
   }
 
+  /** Debounced variant used by every mutator + the deep watcher below.
+   *  Subsequent calls inside the window reset the timer, so a rapid
+   *  burst of edits (e.g. typing a base URL) results in one disk write
+   *  instead of N. */
+  let persistTimer: ReturnType<typeof setTimeout> | null = null;
+  function schedulePersist() {
+    if (persistTimer) clearTimeout(persistTimer);
+    persistTimer = setTimeout(() => {
+      persistTimer = null;
+      persist().catch((e) => console.error("persist llm settings failed", e));
+    }, PERSIST_DEBOUNCE_MS);
+  }
+
+  /** Tests and store-loader callers (e.g. `hydrate`) need a way to flush
+   *  pending writes deterministically without waiting on the timer. */
+  async function flushPersist() {
+    if (persistTimer) {
+      clearTimeout(persistTimer);
+      persistTimer = null;
+    }
+    await persist();
+  }
+
   async function testActive(): Promise<LlmTestResult> {
     const result = await api.testLlm(active.value);
     testResults.value[active.value.id] = result;
     return result;
   }
 
-  watch(providers, () => persist(), { deep: true });
-  watch(activeId, () => persist());
+  /** Probe a specific provider by id (used by the per-provider "Test"
+   *  button on the Settings page). Falls back to the active provider
+   *  if the id is unknown. Result is cached in `testResults` so the
+   *  badge state stays consistent with `testActive`. */
+  async function testOne(id: string): Promise<LlmTestResult | null> {
+    const provider = providers.value.find((p) => p.id === id);
+    if (!provider) return null;
+    const result = await api.testLlm(provider);
+    testResults.value[id] = result;
+    return result;
+  }
+
+  watch(providers, () => schedulePersist(), { deep: true });
+  watch(activeId, () => schedulePersist());
 
   return {
     providers,
@@ -261,5 +301,7 @@ export const useLLMStore = defineStore("llm", () => {
     addModel,
     removeModel,
     testActive,
+    testOne,
+    flushPersist,
   };
 });

@@ -123,12 +123,17 @@ async function saveNew() {
 async function testOne(p: LlmProviderConfig) {
   testing.value = p.id;
   try {
-    const r = await api.testLlm(p);
-    toast.push({
-      title: r.ok ? t('status.passed') : t('status.errored'),
-      description: r.message,
-      variant: r.ok ? "success" : "destructive",
-    });
+    // Route through the store so `testResults` is populated — that
+    // gives the badge on each provider card a stable source instead
+    // of recomputing on every render.
+    const r = await llm.testOne(p.id);
+    if (r) {
+      toast.push({
+        title: r.ok ? t('status.passed') : t('status.errored'),
+        description: r.message,
+        variant: r.ok ? "success" : "destructive",
+      });
+    }
   } catch (e: unknown) {
     toast.push({
       title: t('ai.errorTest'),
@@ -220,7 +225,7 @@ onMounted(async () => {
                 {{ llm.activeId === p.id ? t('common.enabled') : t('common.disabled') }}
               </Badge>
               <span class="text-sm font-semibold">{{ p.name }}</span>
-              <code class="rounded bg-muted px-1.5 py-0.5 text-[10px] text-muted-foreground">
+              <code class="rounded bg-muted px-1.5 py-0.5 text-[10px] text-foreground">
                 {{ formatLabel(p.api_format) }} · {{ formatEndpoint(p.api_format) }}
               </code>
               <span class="text-xs text-muted-foreground">{{ p.base_url }}</span>
@@ -263,6 +268,7 @@ onMounted(async () => {
                   <Label class="mb-1 block text-xs">{{ t('settings.name') }}</Label>
                   <Input
                     :modelValue="p.name"
+                    :aria-label="`${p.name} ${t('settings.name')}`"
                     @update:modelValue="updateField(p, 'name', $event)"
                   />
                 </div>
@@ -271,6 +277,7 @@ onMounted(async () => {
                   <Select
                     :modelValue="p.api_format"
                     :options="formatOptions.map(o => ({ label: `${o.label} (${o.endpoint})`, value: o.value }))"
+                    :aria-label="`${p.name} ${t('settings.apiFormat')}`"
                     @update:modelValue="updateField(p, 'api_format', $event as ApiFormat)"
                   />
                 </div>
@@ -278,6 +285,7 @@ onMounted(async () => {
                   <Label class="mb-1 block text-xs">{{ t('settings.baseUrl') }}</Label>
                   <Input
                     :modelValue="p.base_url"
+                    :aria-label="`${p.name} ${t('settings.baseUrl')}`"
                     @update:modelValue="updateField(p, 'base_url', $event)"
                   />
                 </div>
@@ -291,6 +299,7 @@ onMounted(async () => {
                   <Input
                     type="password"
                     :modelValue="p.api_key"
+                    :aria-label="`${p.name} ${t('settings.apiKey')}`"
                     @update:modelValue="updateField(p, 'api_key', $event)"
                     placeholder="sk-…"
                   />
@@ -299,6 +308,7 @@ onMounted(async () => {
                   <Label class="mb-1 block text-xs">{{ t('settings.organization') }}</Label>
                   <Input
                     :modelValue="p.organization ?? ''"
+                    :aria-label="`${p.name} ${t('settings.organization')}`"
                     @update:modelValue="updateField(p, 'organization', $event || null)"
                     placeholder="org-…"
                   />
@@ -312,6 +322,7 @@ onMounted(async () => {
                       min="0"
                       max="2"
                       class="max-w-[8rem]"
+                      :aria-label="`${p.name} ${t('settings.temperature')}`"
                       :modelValue="String(p.temperature)"
                       @update:modelValue="updateField(p, 'temperature', Number($event) || 0)"
                     />
@@ -444,7 +455,7 @@ onMounted(async () => {
               <Save class="h-4 w-4" /> {{ t('settings.saveProvider') }}
             </Button>
           </div>
-          <div class="rounded-md border border-amber-500/30 bg-amber-500/10 p-3 text-xs text-amber-700 dark:text-amber-300">
+          <div class="rounded-md border border-amber-500/30 bg-amber-100 p-3 text-xs text-amber-900 dark:bg-amber-500/20 dark:text-amber-200">
             <AlertTriangle class="mr-1 inline h-3 w-3" />
             {{ t('settings.apiKeyHint') }}
             (<code class="font-mono">{{ "{app_data_dir}/perf-pilot.settings.json" }}</code>).

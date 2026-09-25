@@ -55,6 +55,8 @@ export default {
     recentRunsTitle: "最近运行",
     recentRunsDesc: "你最近的 k6 测试执行记录。",
     recentRunsEmpty: "暂无运行。先写或生成一个脚本，然后点击运行。",
+    trendsTitle: "性能趋势",
+    trendsDesc: "最近 20 次运行的 p(95)、吞吐和错误率。线条颜色反映最近一次变化对指标而言是变好还是变差。",
     envTitle: "环境",
     envDesc: "本地环境诊断。",
     envK6: "k6 二进制",
@@ -222,6 +224,7 @@ export default {
     idLabel: "id",
     ago: "前",
     durationFormat: (d: string) => d,
+    loadDetailFailed: "无法读取该运行的详情",
   },
   settings: {
     title: "LLM providers",
