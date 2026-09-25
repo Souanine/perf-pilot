@@ -35,8 +35,13 @@ esac
 
 OUT="$OUT_DIR/k6-${TARGET}${EXE_EXT}"
 URL="https://github.com/grafana/k6/releases/download/${VERSION}/k6-${VERSION}-${ASSET_OS}-${ASSET_ARCH}.zip"
-TMP="$(mktemp -t k6-fetch).zip"
-trap 'rm -f "$TMP"' EXIT
+# `mktemp -d` (a temp *directory*) avoids the GNU-vs-Windows mktemp template
+# mismatch we hit on `windows-latest` — Windows rejects `-t k6-fetch` because
+# the prefix has no X's, while GNU accepts it. Building the zip path inside
+# a fresh dir sidesteps both.
+TMP_DIR="$(mktemp -d)"
+TMP="$TMP_DIR/k6-fetch.zip"
+trap 'rm -rf "$TMP_DIR"' EXIT
 
 echo "→ fetching $URL"
 curl -sL --fail "$URL" -o "$TMP" || {
