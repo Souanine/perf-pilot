@@ -2,6 +2,8 @@
 
 > AI-native desktop performance testing platform — **Tauri 2 + Vue 3 + k6**.
 
+[简体中文](./README.zh-CN.md)
+
 PerfPilot turns natural-language intents into runnable k6 load-test scripts, lets you edit them with Monaco, configure LLM providers, and stream real-time test output from your desktop.
 
 ## Features
