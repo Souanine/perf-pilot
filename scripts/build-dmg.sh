@@ -23,15 +23,13 @@ trap 'rm -rf "$STAGING"' EXIT
 
 # ditto preserves Mac metadata + symlinks better than cp -R.
 ditto "$APP_SRC" "$STAGING/PerfPilot.app"
-ln -s /Applications "$STAGING/Applications"
 
-# -srcfolder preserves the symlink in some macOS versions; in others
-# it's stripped. The output is at minimum usable even when stripped
-# (the user can manually drag to ~/Applications), but if you have
-# create-dmg installed (brew install create-dmg) the layout is
-# pixel-perfect — fall back to it when available.
+# create-dmg creates the Applications drop-link itself via
+# --app-drop-link; hdiutil has no such option and needs us to seed the
+# symlink. So we only build the symlink on the fallback path.
 if command -v create-dmg >/dev/null 2>&1; then
   echo "→ create-dmg (with layout)"
+  # create-dmg positional args: <output.dmg> <source-folder>
   create-dmg \
     --volname "PerfPilot" \
     --volicon "$PROJECT_ROOT/src-tauri/icons/icon.icns" \
@@ -40,10 +38,11 @@ if command -v create-dmg >/dev/null 2>&1; then
     --icon "PerfPilot.app" 170 170 \
     --app-drop-link 360 170 \
     --no-internet-enable \
-    "$STAGING" \
-    "$OUT_DMG"
+    "$OUT_DMG" \
+    "$STAGING"
 else
   echo "→ hdiutil fallback (no create-dmg)"
+  ln -s /Applications "$STAGING/Applications"
   rm -f "$OUT_DMG"
   hdiutil create \
     -volname "PerfPilot" \
