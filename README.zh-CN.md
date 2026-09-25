@@ -58,12 +58,14 @@ perf-pilot/
 
 ```bash
 npm install
+scripts/fetch-k6.sh        # 把 k6 sidecar 拉到 src-tauri/binaries/（仅首次 / 升级 k6 时需要）
 npm run tauri:dev          # 启动桌面端 app
 ```
 
 ## 生产构建
 
 ```bash
+scripts/fetch-k6.sh        # 同上
 npm run tauri:build        # 仅 .app
 npm run tauri:release-dmg  # .app + .dmg（带 Applications 快捷方式）
 ```
@@ -122,9 +124,30 @@ open src-tauri/target/release/bundle/macos/PerfPilot.app
 ## 系统要求
 
 - **macOS** 10.13 或更高（测试环境：macOS 26 Tahoe，arm64）
+- **Windows** 10 / 11 x64（NSIS 安装包）
 - **Rust** 1.77+（仅开发时需要）
 - **Node** 18+ 与 **npm** 9+
-- **k6** —— 在 [k6.io](https://k6.io/docs/getting-started/installation/) 安装。PerfPilot 通过 PATH 自动检测，路径可在 LLM 设置中覆盖
+- **k6** —— 已随应用打包（sidecar），无需单独安装。运行时优先使用应用内的 k6，其次才是 PATH 上由 Homebrew 等安装的系统版本。如需使用自定义构建，可用 `K6_PATH` 环境变量覆盖
+
+## 发布产物
+
+`.github/workflows/release.yml` 在 push `v*` tag 或手动触发时，构建两套原生安装包：
+
+| 平台 | 产物 | 触发 runner | 备注 |
+| --- | --- | --- | --- |
+| macOS Apple Silicon | `PerfPilot-0.1.0-arm64.dmg` + `PerfPilot.app` | `macos-latest` | DMG 由 `scripts/build-dmg.sh` 重新打包（绕开 Tauri 内置 DMG bundler 的 v2 已知 bug） |
+| Windows x64 | `PerfPilot_0.1.0_x64-setup.exe` | `windows-latest` | NSIS 安装包，通过 `choco install nsis` 提供 makensis |
+
+每个产物单独上传为 GitHub Actions artifact，便于分平台下载。本地手工构建：
+
+```bash
+# macOS Apple Silicon
+npm run tauri:build -- --target aarch64-apple-darwin
+bash scripts/build-dmg.sh
+
+# Windows x64（需要在 Windows runner / 机器上）
+npm run tauri:build -- --target x86_64-pc-windows-msvc
+```
 
 ## 许可
 
