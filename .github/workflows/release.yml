@@ -104,9 +104,11 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact }}
-          path: |
-            PerfPilot-*-arm64.dmg
-            src-tauri/target/aarch64-apple-darwin/release/bundle/macos/PerfPilot.app
+          # Ship the DMG only — it's the canonical macOS distribution
+          # format (drag-to-Applications UX) and already contains the .app
+          # compressed inside. Uploading both duplicates the k6 sidecar
+          # in the artifact and inflates size from ~37 MB to ~73 MB.
+          path: PerfPilot-*-arm64.dmg
           if-no-files-found: error
 
       - name: Upload Windows artifacts
