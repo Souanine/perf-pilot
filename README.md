@@ -8,84 +8,88 @@ PerfPilot turns natural-language intents into runnable k6 load-test scripts, let
 
 ## Features
 
-- 🚀 **k6 engine** — runs `k6 run` directly from the desktop, streams stdout/stderr to the UI
-- 🪄 **AI script generation** — describe a scenario in plain language, get a complete `k6` script (HTTP, RPS, scenarios, thresholds, checks)
-- 🧠 **Pluggable LLMs** — OpenAI-compatible, Anthropic, Ollama, or any custom OpenAI-compatible endpoint (DeepSeek, Moonshot, OpenRouter, etc.)
-- 🖥️ **Monaco Editor** — full IntelliSense-ish k6 JavaScript editing, themes, multi-tab
-- 📊 **Live metrics** — captures k6 summary metrics and renders them in-app
-- 💾 **Local-first** — scripts, runs, and configs persisted via the Tauri store plugin
+- 🚀 **k6 engine** — runs `k6 run` directly from the desktop, streams stdout/stderr to the UI. k6 ships inside the app; no separate install required.
+- 🪄 **AI script generation** — describe a scenario in plain language, get a complete k6 script (HTTP, RPS, scenarios, thresholds, checks).
+- 🧠 **Pluggable LLMs** — OpenAI-compatible, Anthropic, Ollama, or any custom OpenAI-compatible endpoint (DeepSeek, Moonshot, OpenRouter, etc.).
+- 🖥️ **Monaco Editor** — IntelliSense-ish k6 JavaScript editing, themes, multi-tab.
+- 📊 **Live metrics** — captures k6 summary metrics and renders them in-app.
+- 💾 **Local-first** — scripts, runs, and configs persisted via the Tauri store plugin.
 
 ## Stack
 
-| Layer            | Tech                                                    |
-| ---------------- | ------------------------------------------------------- |
-| Desktop shell    | **Tauri 2** (Rust)                                     |
-| UI               | **Vue 3** + **TypeScript** + **Vite**                 |
-| State            | **Pinia**                                              |
-| Design system    | **shadcn-vue / Reka UI** + **Tailwind CSS**          |
-| Code editor      | **Monaco Editor**                                      |
-| Load engine      | **k6** (CLI, invoked via Rust)                          |
-| LLM transport    | `reqwest` (Rust) for OpenAI-compatible chat completions |
+| Layer | Tech |
+| --- | --- |
+| Desktop shell | **Tauri 2** (Rust) |
+| UI | **Vue 3** + **TypeScript** + **Vite** |
+| State | **Pinia** |
+| Design system | **shadcn-vue / Reka UI** + **Tailwind CSS** |
+| Code editor | **Monaco Editor** |
+| Load engine | **k6** (CLI, bundled as a Tauri sidecar) |
+| LLM transport | `reqwest` (Rust) for OpenAI-compatible chat completions |
 
 ## Project layout
 
 ```
 perf-pilot/
 ├── src/                       # Vue 3 frontend
-│   ├── components/
-│   ├── pages/
-│   ├── stores/                # Pinia
-│   ├── lib/                   # Tauri IPC, utils
-│   ├── router.ts
-│   └── main.ts
 ├── src-tauri/                 # Rust backend
-│   ├── src/
-│   │   ├── main.rs
-│   │   ├── lib.rs
-│   │   ├── k6.rs              # k6 runner
-│   │   ├── llm.rs             # LLM provider clients
-│   │   ├── fs.rs              # script IO
-│   │   └── settings.rs        # app settings persistence
-│   ├── Cargo.toml
-│   └── tauri.conf.json
-└── ...
+│   └── src/
+│       ├── k6.rs              # k6 runner + sidecar resolution
+│       ├── llm.rs             # LLM provider clients
+│       ├── llm_stream.rs      # SSE stream parser
+│       ├── fs.rs              # script / run-record IO
+│       └── settings.rs        # app settings persistence
+├── e2e/                       # Playwright e2e (mock Tauri IPC)
+└── scripts/                   # fetch-k6.sh, build-dmg.sh
 ```
 
-## Development
+## Download
+
+Grab the latest installers from the [Releases](https://github.com/Souanine/perf-pilot/releases) page:
+
+| Platform | File |
+| --- | --- |
+| macOS Apple Silicon | `PerfPilot-0.1.0-arm64.dmg` |
+| Windows x64 | `PerfPilot_0.1.0_x64-setup.exe` |
+
+## Quick start (development)
 
 ```bash
 npm install
+scripts/fetch-k6.sh        # fetch the per-platform k6 sidecar (~60 MB, gitignored)
 npm run tauri:dev          # launches the desktop app
 ```
 
-## Production build
+For a local production build:
 
 ```bash
-npm run tauri:build
+npm run tauri:build        # .app (macOS) or .exe (Windows)
+npm run tauri:release-dmg  # .app + .dmg on macOS only
 ```
 
-## Tests
+For cross-platform release builds (and to publish installers), see [CONTRIBUTING.md → Releasing](./CONTRIBUTING.md#releasing).
 
-Three layers, each with a different scope:
+## System requirements
 
-| Layer | Command | What it covers |
-|---|---|---|
-| Vue component / Pinia store | `npm run test` | Pure logic; jsdom |
-| Rust backend | `cargo test --lib` (from `src-tauri/`) | k6 parser, SSE parser, index helpers |
-| End-to-end (browser) | `npm run test:e2e` | Real Vue + Pinia + Router against the Vite dev server, with Tauri IPC stubbed via `window.__TAURI_INTERNALS__` |
+| Platform | Minimum |
+| --- | --- |
+| macOS | 10.13+ (tested on macOS 26 Tahoe, arm64) |
+| Windows | 10 / 11 x64 (NSIS installer) |
+| Linux | x64 / arm64 (k6 sidecar script supports both; not currently a release target) |
 
-The e2e suite needs a browser binary. After a fresh install:
+For development only:
 
-```bash
-npx playwright install chromium
-npm run test:e2e
-```
+- **Rust** 1.77+
+- **Node** 18+ and **npm** 9+
 
-Layout under `e2e/`:
+k6 is bundled — no separate install. To use a custom k6 build, set the `K6_PATH` environment variable.
 
-- `playwright.config.ts` — config (boots the Vite dev server, runs chromium headless)
-- `mock-tauri.ts` — IPC shim, including the full `@tauri-apps/plugin-store` protocol
-- `fixtures.ts` / `helpers.ts` — fixtures + page helpers
-- `tests/*.spec.ts` — specs grouped by area (navigation, dashboard, runs, history, settings, ai-generate, theme+locale)
+## License
 
-The e2e suite intentionally drives the Vite dev server (not the Tauri binary) — it covers Vue/Pinia/router flows end-to-end, while real Rust behaviour is owned by `cargo test`. This keeps iteration under 10 seconds per spec instead of seconds-per-step WebDriver overhead.
+Apache-2.0 / MIT dual license. See `LICENSE-APACHE-2.0` and `LICENSE-MIT`.
+
+## Acknowledgements
+
+- [Tauri](https://tauri.app/) — Rust + WebView desktop shell
+- [Monaco Editor](https://microsoft.github.io/monaco-editor/) — VS Code's editor
+- [k6](https://k6.io/) — modern load-testing engine in Go

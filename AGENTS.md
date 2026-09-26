@@ -1,0 +1,100 @@
+# PerfPilot — Agent Notes
+
+> Quick orientation for future agents editing this repo. Keep additions project-specific, not generic.
+
+## What this is
+
+Tauri 2 desktop app that turns natural-language intents into runnable k6 load-test scripts. Vue 3 + TypeScript on the frontend, Rust backend, Monaco editor, pluggable LLM (OpenAI-compatible / Anthropic / Ollama).
+
+## Layout
+
+| Path | What |
+|---|---|
+| `src/` | Vue 3 frontend (components, pages, stores, lib, composables, i18n, router) |
+| `src-tauri/src/` | Rust backend — `main.rs`/`lib.rs`, `k6.rs` runner, `llm.rs` + `llm_stream.rs` providers, `fs.rs` script IO, `settings.rs` persistence |
+| `src-tauri/binaries/` | k6 sidecar binaries, **gitignored**, fetched per-host via `scripts/fetch-k6.sh` |
+| `src-tauri/build.rs` | Exports `PERFPILOT_TARGET_TRIPLE` so Rust resolves the sidecar filename at runtime |
+| `e2e/` | Playwright specs — drives Vite dev server with Tauri IPC stubbed via `mock-tauri.ts` |
+| `scripts/fetch-k6.sh` | Per-platform k6 fetch (macOS/Linux/Windows) mapped from `rustc -vV` host triple |
+| `scripts/build-dmg.sh` | DMG bundling; takes optional target triple as `$1` |
+| `.github/workflows/release.yml` | Matrix build (macOS arm64 + Windows x64) + auto-publishes GitHub Release on tag push |
+
+## Commands
+
+```bash
+# Setup (one-time, or after upgrading k6)
+npm install
+scripts/fetch-k6.sh                       # drops k6 into src-tauri/binaries/
+
+# Development
+npm run dev                               # Vite dev server (frontend only)
+npm run tauri:dev                         # full desktop app
+npm run typecheck                         # vue-tsc --noEmit
+
+# Tests (current counts: 47 cargo, 9 Playwright specs)
+npm run test                              # Vitest (jsdom)
+cd src-tauri && cargo test --lib          # Rust unit tests
+npx playwright install chromium          # one-time, before first e2e
+npm run test:e2e                          # Playwright (Vite + mocked Tauri IPC)
+npm run test:e2e e2e/tests/a11y.spec.ts   # WCAG 2.1 AA scan
+
+# Production
+npm run tauri:build                       # .app (macOS) or .exe (Windows)
+npm run tauri:build -- --target aarch64-apple-darwin  # explicit triple
+npm run tauri:release-dmg                 # macOS .app + .dmg
+
+# Release (publishes via CI)
+git tag v0.1.x && git push --tags         # triggers .github/workflows/release.yml
+```
+
+## Architecture boundaries
+
+- **Vue → Rust** through Tauri IPC, surfaced to the frontend via `src/lib/`. Don't reach into Rust from components directly.
+- **k6 spawning**: `k6::which_k6()` resolution chain — `K6_PATH` (user) → `PERFPILOT_K6_BIN` (sidecar) → common system paths → PATH. `lib::run()` setup() calls `publish_sidecar_path_to_env()` to wire the sidecar path before any test runs.
+- **LLM providers**: `LlmProviderConfig` carries the format + model catalog. `llm.rs` is non-streaming; `llm_stream.rs` parses SSE and emits `chunk://` events to the window.
+- **State**: Pinia stores under `src/stores/`. Persistence via `@tauri-apps/plugin-store`.
+- **i18n**: Vue I18n with English (default) + Chinese (`zh-CN`). Locales in `src/i18n/`.
+
+## Sidecar / cross-platform gotchas
+
+- `bundle.externalBin: ["binaries/k6"]` requires the file to be named `k6-<rustc-target-triple>[.exe]`. Apple Silicon: `k6-aarch64-apple-darwin`. Windows: `k6-x86_64-pc-windows-msvc.exe`. Linux targets are also mapped in `scripts/fetch-k6.sh`.
+- `bundle.targets: "all"` resolves at build time — DMG on macOS, NSIS on Windows, no config change needed.
+- `tauri build --target <triple>` puts output under `target/<triple>/release/...`. `build-dmg.sh` accepts the triple as `$1`; the CI workflow passes `${{ matrix.target }}`.
+- `mktemp -t PREFIX` is rejected by Windows Git Bash when the prefix has no `X`'s. The release scripts use `mktemp -d` (temp directory) instead — keep them consistent if you copy patterns.
+- Don't commit `src-tauri/binaries/*` — gitignored, ~60 MB each, fetched per-host.
+
+## E2E testing strategy (deliberate tradeoff**: don't change without checking with the user)
+
+The Playwright suite drives the Vite dev server, **not the Tauri binary**, and injects `window.__TAURI_INTERNALS__` from `e2e/mock-tauri.ts`. This:
+
+- Iterates in <10 s per spec (vs seconds-per-step for real WebDriver on a Tauri WebView).
+- Exercises real Vue/Pinia/router flows end-to-end.
+- Sacrifices production parity — bugs that only appear in release builds (Tauri IPC quirks, native dialogs, k6 spawn) are caught by `cargo test` for Rust, and by manual `computer-use` runs against the release DMG before each PR.
+
+When adding IPC commands in Rust, also stub them in `e2e/mock-tauri.ts` — missing stubs throw `not implemented` and break specs that touch the new command.
+
+## Release pipeline (`.github/workflows/release.yml`)
+
+1. Tag push (`v*`) or `workflow_dispatch` triggers `build` matrix.
+2. macOS Apple Silicon + Windows x64 jobs run in parallel: cache cargo → fetch k6 sidecar → `tauri build --target <triple>` → platform bundler (DMG or NSIS).
+3. Artifacts: `PerfPilot-macOS-arm64` (DMG only — 37 MB), `PerfPilot-Windows-x64` (NSIS — 30 MB).
+4. `release` job (Ubuntu, only fires on tag push) downloads artifacts and publishes a GitHub Release via `softprops/action-gh-release@v2`. Re-runs via dispatch do NOT publish.
+
+## Things to read before editing
+
+- `src-tauri/src/k6.rs` — k6 runner, metric parser, sidecar resolution. Touching this affects every test run.
+- `src-tauri/src/lib.rs` — Tauri command surface (`run_k6`, `generate_script_stream`, etc.). Each new command needs `e2e/mock-tauri.ts` stub.
+- `.github/workflows/release.yml` — adding a new platform? Add a `matrix.include` entry + map it in `scripts/fetch-k6.sh`.
+
+## Conventions
+
+- Conventional commits (`feat:`, `fix:`, `chore:`, `docs:`, `refactor:`, `ci:`) — see `git log --oneline`.
+- Comments only when they state a constraint the code can't show. No narrating-the-line.
+- Frontend state goes in Pinia stores, not in components. Composables (`src/composables/`) for cross-component reactive logic.
+- Rust errors returned from `#[tauri::command]` are `Result<T, String>` — stringified for IPC.
+
+## Known issues / non-obvious choices
+
+- macOS bundle identifier `dev.perfpilot.app` ends in `.app` — Tauri warns at build time. Not blocking; leave until packaging for the App Store is on the roadmap.
+- `npm run build` triggers the frontend typecheck (`vue-tsc --noEmit`) before Vite. CI uses `npm run typecheck` separately for fail-fast on type errors without paying Vite's bundle cost.
+- The e2e suite intentionally disables Playwright parallelism — see the comment in `playwright.config.ts`. Don't re-enable without auditing the `installTauriMocks` fixture for shared state.
