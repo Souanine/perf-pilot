@@ -518,17 +518,27 @@ pub fn which_k6() -> Option<String> {
 ///
 /// Tauri 2's `bundle.externalBin` ships the binary alongside the host
 /// executable (macOS: `Contents/MacOS/`, Windows/Linux: next to the .exe).
-/// The on-disk filename is `k6-<target-triple>` where `<target-triple>` is
-/// what `rustc -vV` reports as `host` (e.g. `aarch64-apple-darwin`).
 ///
-/// In dev (`tauri dev`) the binary is placed next to the dev executable;
-/// in release builds it's inside the bundled `.app`. Both share the same
-/// directory as `current_exe()`, so this works for both.
+/// **Filename note**: the *source* file in `src-tauri/binaries/` must be
+/// named `k6-<target-triple>[.exe]` for Tauri's bundler to find it during
+/// build, but the bundler **strips** the triple suffix when placing the
+/// binary in the output bundle. The on-disk name in a packaged app is just
+/// `k6.exe` (Windows) or `k6` (macOS/Linux). Looking for the triple-suffixed
+/// name at runtime fails silently — the original bug was that
+/// `which_k6()` would never see the bundled binary and fall through to PATH,
+/// which "happened to work" on macOS where most users have Homebrew k6 but
+/// silently broke on Windows.
+///
+/// In dev (`tauri dev`) the binary is placed next to the dev executable
+/// with the same stripped name; in release builds it's inside the bundled
+/// `.app` / `.exe`. Both share the same directory as `current_exe()`.
 pub fn resolve_sidecar_k6_path() -> Option<std::path::PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
-    let triple = current_target_triple();
-    let p = dir.join(format!("k6-{triple}"));
+    // `cfg!(windows)` is host-platform at compile time — the dev binary
+    // and the bundled binary both go by the same name on the same host.
+    let bin_name = if cfg!(windows) { "k6.exe" } else { "k6" };
+    let p = dir.join(bin_name);
     if p.exists() { Some(p) } else { None }
 }
 
@@ -779,20 +789,69 @@ http_reqs...................: 0    100    10/s
         assert!(merge_env(&opts).is_empty());
     }
 
-    /// `resolve_sidecar_k6_path` should look next to `current_exe()` for a
-    /// binary named `k6-<target-triple>`. We don't depend on a real binary
-    /// existing — just confirm the path shape matches the Tauri convention.
+    /// `resolve_sidecar_k6_path` should look next to `current_exe()` for
+    /// `k6.exe` (Windows) or `k6` (Unix) — Tauri's bundler strips the
+    /// target-triple suffix at bundle time. If a sidecar happens to be
+    /// sitting next to the test runner, confirm we look up the right name.
     #[test]
-    fn sidecar_path_matches_target_triple_suffix() {
-        let triple = current_target_triple();
-        assert!(!triple.is_empty(), "PERFPILOT_TARGET_TRIPLE must be set by build.rs");
+    fn sidecar_path_uses_bundled_name_not_triple_suffix() {
+        let expected_name = if cfg!(windows) { "k6.exe" } else { "k6" };
         if let Some(p) = resolve_sidecar_k6_path() {
             let name = p.file_name().unwrap().to_string_lossy().to_string();
-            assert_eq!(name, format!("k6-{triple}"));
+            assert_eq!(name, expected_name);
         }
-        // If `current_exe()` happens not to have a sibling k6 binary (the
-        // common case during `cargo test`), `resolve_sidecar_k6_path` is
-        // allowed to return None — we only assert the *shape* when present.
+        // Otherwise None is fine — common during `cargo test`.
+    }
+
+    /// End-to-end: drop a `k6` binary next to the test runner (the same
+    /// directory layout Tauri uses in a packaged app) and confirm
+    /// `resolve_sidecar_k6_path` finds it. This is the runtime path
+    /// that previously missed because the lookup used `k6-<triple>`
+    /// instead of the bundled `k6`.
+    #[test]
+    fn resolve_sidecar_k6_path_finds_bundled_binary_next_to_exe() {
+        let exe = std::env::current_exe().expect("current_exe");
+        let dir = exe.parent().expect("exe parent");
+        let bin_name = if cfg!(windows) { "k6.exe" } else { "k6" };
+        let staged = dir.join(format!(".perf-pilot-test-k6-{bin_name}"));
+
+        // Locate the real sidecar source and place a copy / hardlink next
+        // to the test runner under the expected bundled name.
+        let triple = current_target_triple();
+        assert!(!triple.is_empty(), "PERFPILOT_TARGET_TRIPLE must be set by build.rs");
+        let src = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("binaries")
+            .join(format!("k6-{triple}"));
+        if !src.exists() {
+            eprintln!(
+                "skip: sidecar source missing at {} — run scripts/fetch-k6.sh",
+                src.display()
+            );
+            return;
+        }
+        std::fs::copy(&src, &staged).expect("copy sidecar to staging path");
+
+        // Move the staged copy to the exact bundled name next to the test
+        // runner, then call the resolver.
+        let target = dir.join(bin_name);
+        if target.exists() {
+            // Don't trample a real `k6` — back it up briefly.
+            let backup = dir.join(format!(".perf-pilot-test-k6-backup-{bin_name}"));
+            std::fs::rename(&target, &backup).expect("backup existing k6");
+            std::fs::rename(&staged, &target).expect("stage sidecar at bundled name");
+            let resolved = resolve_sidecar_k6_path();
+            std::fs::rename(&target, &staged).expect("restore staged");
+            std::fs::rename(&backup, &target).expect("restore original k6");
+            assert!(resolved.is_some(), "resolver should find staged sidecar");
+            assert_eq!(resolved.unwrap(), target);
+        } else {
+            std::fs::rename(&staged, &target).expect("stage sidecar at bundled name");
+            let resolved = resolve_sidecar_k6_path();
+            std::fs::remove_file(&target).expect("cleanup staged sidecar");
+            assert!(resolved.is_some(), "resolver should find staged sidecar");
+            assert_eq!(resolved.unwrap(), target);
+        }
+        let _ = std::fs::remove_file(&staged); // may already be moved
     }
 
     /// End-to-end: when the system has no k6 (PATH is empty, K6_PATH is

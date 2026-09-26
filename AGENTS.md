@@ -57,7 +57,7 @@ git tag v0.1.x && git push --tags         # triggers .github/workflows/release.y
 
 ## Sidecar / cross-platform gotchas
 
-- `bundle.externalBin: ["binaries/k6"]` requires the file to be named `k6-<rustc-target-triple>[.exe]`. Apple Silicon: `k6-aarch64-apple-darwin`. Windows: `k6-x86_64-pc-windows-msvc.exe`. Linux targets are also mapped in `scripts/fetch-k6.sh`.
+- `bundle.externalBin: ["binaries/k6"]` requires the **source** file to be named `k6-<rustc-target-triple>[.exe]` (Apple Silicon: `k6-aarch64-apple-darwin`; Windows: `k6-x86_64-pc-windows-msvc.exe`; Linux targets are mapped in `scripts/fetch-k6.sh`). Tauri's bundler **strips the target-triple suffix** when placing the binary in the output bundle — the on-disk name in a packaged app is just `k6.exe` (Windows) or `k6` (macOS/Linux). `k6::resolve_sidecar_k6_path()` looks up the stripped name. If you change the source name, update `scripts/fetch-k6.sh`; if you change the bundled name, update `resolve_sidecar_k6_path()`.
 - `bundle.targets: "all"` resolves at build time — DMG on macOS, NSIS on Windows, no config change needed.
 - `tauri build --target <triple>` puts output under `target/<triple>/release/...`. `build-dmg.sh` accepts the triple as `$1`; the CI workflow passes `${{ matrix.target }}`.
 - `mktemp -t PREFIX` is rejected by Windows Git Bash when the prefix has no `X`'s. The release scripts use `mktemp -d` (temp directory) instead — keep them consistent if you copy patterns.
