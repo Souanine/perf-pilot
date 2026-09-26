@@ -86,7 +86,7 @@ k6 已随应用打包。如需使用自定义构建，可用 `K6_PATH` 环境变
 
 ## 许可
 
-本仓库采用 Apache-2.0 / MIT 双许可。详见 `LICENSE-APACHE-2.0` 与 `LICENSE-MIT`。
+MIT。详见 [`LICENSE`](./LICENSE)。
 
 ## 致谢
 

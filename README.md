@@ -86,7 +86,7 @@ k6 is bundled — no separate install. To use a custom k6 build, set the `K6_PAT
 
 ## License
 
-Apache-2.0 / MIT dual license. See `LICENSE-APACHE-2.0` and `LICENSE-MIT`.
+MIT. See [`LICENSE`](./LICENSE).
 
 ## Acknowledgements
 
