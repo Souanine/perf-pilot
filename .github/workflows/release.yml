@@ -153,6 +153,13 @@ jobs:
           name: PerfPilot-Windows-x64
           path: artifacts/windows
 
+      - name: Resolve version
+        id: ver
+        # Tauri names the installer after `version` in tauri.conf.json,
+        # which must track the git tag. Deriving the number here keeps the
+        # table below correct without a second place to bump by hand.
+        run: echo "version=${GITHUB_REF_NAME#v}" >> "$GITHUB_OUTPUT"
+
       - name: Publish release
         uses: softprops/action-gh-release@v2
         with:
@@ -166,7 +173,7 @@ jobs:
 
             | 平台 | 文件 |
             | --- | --- |
-            | Windows x64 | `PerfPilot_0.1.0_x64-setup.exe` |
+            | Windows x64 | `PerfPilot_${{ steps.ver.outputs.version }}_x64-setup.exe` |
 
             k6 已随应用打包，无需单独安装。
 
