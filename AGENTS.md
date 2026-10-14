@@ -17,7 +17,7 @@ Tauri 2 desktop app that turns natural-language intents into runnable k6 load-te
 | `e2e/` | Playwright specs — drives Vite dev server with Tauri IPC stubbed via `mock-tauri.ts` |
 | `scripts/fetch-k6.sh` | Per-platform k6 fetch (macOS/Linux/Windows) mapped from `rustc -vV` host triple |
 | `scripts/build-dmg.sh` | DMG bundling; takes optional target triple as `$1` |
-| `.github/workflows/release.yml` | Matrix build (macOS arm64 + Windows x64) + auto-publishes GitHub Release on tag push |
+| `.github/workflows/release.yml` | Matrix build (**Windows x64 only** — macOS temporarily disabled, no signing cert) + auto-publishes GitHub Release on tag push |
 
 ## Commands
 
@@ -76,9 +76,11 @@ When adding IPC commands in Rust, also stub them in `e2e/mock-tauri.ts` — miss
 ## Release pipeline (`.github/workflows/release.yml`)
 
 1. Tag push (`v*`) or `workflow_dispatch` triggers `build` matrix.
-2. macOS Apple Silicon + Windows x64 jobs run in parallel: cache cargo → fetch k6 sidecar → `tauri build --target <triple>` → platform bundler (DMG or NSIS).
-3. Artifacts: `PerfPilot-macOS-arm64` (DMG only — 37 MB), `PerfPilot-Windows-x64` (NSIS — 30 MB).
+2. Windows x64 job only (macOS arm64 is **temporarily disabled**, see below): cache cargo → fetch k6 sidecar → `tauri build --target <triple>` → NSIS bundler.
+3. Artifacts: `PerfPilot-Windows-x64` (NSIS — 30 MB). `PerfPilot-macOS-arm64` (DMG) is not currently produced.
 4. `release` job (Ubuntu, only fires on tag push) downloads artifacts and publishes a GitHub Release via `softprops/action-gh-release@v2`. Re-runs via dispatch do NOT publish.
+
+**macOS builds are temporarily disabled** (no Apple Developer account). An unsigned/un-notarized `.dmg` makes Gatekeeper report「应用已损坏」on launch, so the DMG is unusable for distribution — don't "fix" this by re-adding the macOS matrix entry alone. Restoring it requires uncommenting **both** the `macos-latest` matrix entry **and** the `Download macOS DMG` step + `artifacts/macos/*.dmg` glob in the `release` job; restoring only the first makes the publish job fail on `fail_on_unmatched_files: true`. Local macOS dev builds (`npm run tauri:dev`, `npm run tauri:release-dmg`) are unaffected.
 
 ## Things to read before editing
 

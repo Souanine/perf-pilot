@@ -6,8 +6,16 @@
 #
 # Output artifacts (per platform, uploaded separately so they can be
 # downloaded independently):
-#   macOS   → PerfPilot-macOS-arm64   (.dmg + .app)
 #   Windows → PerfPilot-Windows-x64   (NSIS Setup.exe)
+#   macOS   → PerfPilot-macOS-arm64   (.dmg) — DISABLED, see below.
+#
+# TEMPORARY: macOS builds are disabled because there is no Apple
+# Developer account yet. An unsigned, un-notarized .dmg trips Gatekeeper
+# and users see「应用已损坏」instead of the app — unusable for
+# distribution. Re-enable by uncommenting the macOS matrix entry AND the
+# two `macOS` blocks in the `release` job (see markers below); they must
+# be restored together or `fail_on_unmatched_files` breaks the publish.
+# Windows needs no code signing to install, so it ships fine as-is.
 #
 # Notes:
 #   - `bundle.targets: "all"` in tauri.conf.json is resolved by Tauri's
@@ -36,10 +44,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - platform: macos-latest
-            target: aarch64-apple-darwin
-            label: macOS (Apple Silicon)
-            artifact: PerfPilot-macOS-arm64
+          # TEMPORARY: re-enable when an Apple Developer account exists
+          # (needs signing + notarization for Gatekeeper to accept it).
+          # - platform: macos-latest
+          #   target: aarch64-apple-darwin
+          #   label: macOS (Apple Silicon)
+          #   artifact: PerfPilot-macOS-arm64
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
             label: Windows (x64)
@@ -130,11 +140,12 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: Download macOS DMG
-        uses: actions/download-artifact@v4
-        with:
-          name: PerfPilot-macOS-arm64
-          path: artifacts/macos
+      # TEMPORARY: keep commented in lockstep with the macOS matrix entry.
+      # - name: Download macOS DMG
+      #   uses: actions/download-artifact@v4
+      #   with:
+      #     name: PerfPilot-macOS-arm64
+      #     path: artifacts/macos
 
       - name: Download Windows installer
         uses: actions/download-artifact@v4
@@ -155,10 +166,11 @@ jobs:
 
             | 平台 | 文件 |
             | --- | --- |
-            | macOS Apple Silicon | `PerfPilot-0.1.0-arm64.dmg` |
             | Windows x64 | `PerfPilot_0.1.0_x64-setup.exe` |
 
             k6 已随应用打包，无需单独安装。
+
+            macOS 版本暂未提供：没有 Apple Developer 账号就无法完成签名与公证，
+            未签名的 .dmg 会被 Gatekeeper 判定为「应用已损坏」，因此暂不分发。
           files: |
-            artifacts/macos/*.dmg
             artifacts/windows/*.exe
