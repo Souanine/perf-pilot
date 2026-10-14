@@ -543,6 +543,10 @@ pub fn resolve_sidecar_k6_path() -> Option<std::path::PathBuf> {
 }
 
 /// `rustc -vV` host triple, e.g. `aarch64-apple-darwin`.
+///
+/// Test-only: the sidecar is resolved at runtime from the bundled name,
+/// so only the sidecar-location tests need the compile-time triple.
+#[cfg(test)]
 fn current_target_triple() -> &'static str {
     // Computed at compile time by `build.rs` from Cargo's `TARGET` env var.
     // This is the same string Tauri uses to suffix the sidecar filename.
