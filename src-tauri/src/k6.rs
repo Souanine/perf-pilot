@@ -933,4 +933,214 @@ http_reqs...................: 0    100    10/s
             None => std::env::remove_var("PERFPILOT_K6_BIN"),
         }
     }
+
+    // --- Tests that spawn the real k6 binary ---------------------------
+    //
+    // Everything above is pure-function level: `build_k6_args` returns a
+    // `Vec<String>`, `parse_metrics` takes a `&str`. A whole class of
+    // defect therefore passes every unit test while breaking the app --
+    // most memorably `prepare_run` spawning `k6 <cli_args>` with no `run`
+    // subcommand and no script path, so every run exited with
+    // `unknown flag`. The e2e suite cannot catch it either: it stubs
+    // Tauri IPC, so `run_k6` returns canned data and k6 never launches.
+    //
+    // These construct the command exactly the way `prepare_run` does and
+    // assert k6 actually accepts it. Verified by reverting
+    // `build_k6_args`: 7 tests fail, 4 of them these. Deliberately
+    // network-free so the suite stays deterministic and works offline;
+    // each test skips rather than fails when no k6 is present.
+
+    /// `which_k6` first, then the bundled sidecar.
+    ///
+    /// `publish_sidecar_path_to_env` only runs under the Tauri app, and
+    /// `resolve_sidecar_k6_path` looks next to the *test* binary
+    /// (`target/debug/deps/`) whereas `tauri dev` stages the sidecar one
+    /// level up in `target/debug/`. Neither is the source of truth, so
+    /// fall back to the tree in `binaries/`.
+    fn spawnable_k6() -> Option<String> {
+        which_k6()
+            .or_else(|| resolve_sidecar_k6_path().map(|p| p.to_string_lossy().to_string()))
+            .or_else(source_sidecar)
+    }
+
+    /// `src-tauri/binaries/k6-<triple>` — where `scripts/fetch-k6.sh`
+    /// drops it. This is the path CI uses, so it is what makes these
+    /// tests meaningful on a fresh checkout.
+    fn source_sidecar() -> Option<String> {
+        let triple = current_target_triple();
+        if triple.is_empty() {
+            return None;
+        }
+        let name = if cfg!(windows) {
+            format!("k6-{triple}.exe")
+        } else {
+            format!("k6-{triple}")
+        };
+        let p = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("binaries")
+            .join(name);
+        p.exists().then(|| p.to_string_lossy().to_string())
+    }
+
+    fn k6_or_skip(test_name: &str) -> Option<String> {
+        match spawnable_k6() {
+            Some(p) => Some(p),
+            None => {
+                eprintln!("skip: {test_name} - no k6 binary (run scripts/fetch-k6.sh)");
+                None
+            }
+        }
+    }
+
+    /// A k6 script that performs no I/O. `iterations` keeps it
+    /// deterministic; `sleep` gives the loop something to do without
+    /// touching the network.
+    const NO_NETWORK_SCRIPT: &str = "\
+import { sleep } from 'k6';
+export const options = { vus: 1, iterations: 2 };
+export default function () {
+  sleep(0.01);
+}
+";
+
+    fn write_fixture(name: &str) -> std::path::PathBuf {
+        let dir = std::env::temp_dir().join("perf-pilot-it");
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let path = dir.join(format!("{name}.js"));
+        std::fs::write(&path, NO_NETWORK_SCRIPT).expect("write fixture");
+        path
+    }
+
+    /// Mirrors `prepare_run`: `Command::new(k6).args(build_k6_args(..))`.
+    /// Keeping the construction identical is the whole point -- a test
+    /// that built the argv differently would pass while the app stayed
+    /// broken.
+    fn run_k6_like_the_app(
+        k6: &str,
+        script_path: &str,
+        options: &RunOptions,
+    ) -> std::process::Output {
+        let args = build_k6_args(script_path, options);
+        std::process::Command::new(k6).args(&args).output().expect("spawn k6")
+    }
+
+    fn plain_opts() -> RunOptions {
+        RunOptions {
+            label: None,
+            env: HashMap::new(),
+            cli_args: vec![],
+            max_duration_seconds: 0,
+        }
+    }
+
+    #[test]
+    fn real_k6_reports_a_version() {
+        let Some(k6) = k6_or_skip("real_k6_reports_a_version") else { return };
+        let v = read_k6_version(&k6).expect("read k6 version");
+        assert!(
+            v.to_lowercase().contains("k6"),
+            "expected a k6 version string, got {v:?}"
+        );
+    }
+
+    #[test]
+    fn real_k6_runs_a_script_and_exits_zero() {
+        let Some(k6) = k6_or_skip("real_k6_runs_a_script_and_exits_zero") else { return };
+        let script = write_fixture("smoke");
+
+        let out = run_k6_like_the_app(&k6, &script.to_string_lossy(), &plain_opts());
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.success(),
+            "k6 exited {:?}\n--- stdout ---\n{stdout}\n--- stderr ---\n{stderr}",
+            out.status.code()
+        );
+
+        // Exit code alone is NOT proof: bare `k6` prints the banner and
+        // exits 0 without running anything. That is exactly how the
+        // missing-subcommand regression would slip past a status check,
+        // so assert the run actually happened.
+        let parsed = parse_metrics(&stdout);
+        let names: Vec<&str> = parsed.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            names.contains(&"iterations"),
+            "k6 exited 0 but never ran the script (no `iterations` metric).\n\
+             This is what bare `k6` looks like.\n--- stdout ---\n{stdout}"
+        );
+        let _ = std::fs::remove_file(&script);
+    }
+
+    /// Regression guard for the missing `run` subcommand: the argv
+    /// `prepare_run` used to exec produced exactly this failure.
+    #[test]
+    fn k6_rejects_argv_without_the_run_subcommand() {
+        let Some(k6) = k6_or_skip("k6_rejects_argv_without_the_run_subcommand") else { return };
+
+        let bare = std::process::Command::new(&k6)
+            .args(["--summary-trend-stats=p(95)", "--quiet"])
+            .output()
+            .expect("spawn k6");
+        assert!(
+            !bare.status.success(),
+            "k6 accepted a bare flag list; if this ever passes, the regression \
+             it guards may no longer reproduce and the guard is worthless"
+        );
+    }
+
+    #[test]
+    fn cli_args_are_forwarded_and_the_script_still_runs() {
+        let Some(k6) = k6_or_skip("cli_args_are_forwarded_and_the_script_still_runs") else { return };
+        let script = write_fixture("with-flags");
+
+        let opts = RunOptions {
+            cli_args: vec!["--quiet".into(), "--no-usage-report".into()],
+            ..plain_opts()
+        };
+        let out = run_k6_like_the_app(&k6, &script.to_string_lossy(), &opts);
+        let stdout = String::from_utf8_lossy(&out.stdout);
+        let stderr = String::from_utf8_lossy(&out.stderr);
+        assert!(
+            out.status.success(),
+            "k6 rejected forwarded flags: {:?}\n--- stderr ---\n{stderr}",
+            out.status.code()
+        );
+        // `--quiet` drops the banner but keeps the summary block, which is
+        // what `parse_metrics` consumes.
+        assert!(!stdout.trim().is_empty(), "expected summary output, got nothing");
+        let _ = std::fs::remove_file(&script);
+    }
+
+    #[test]
+    fn real_k6_summary_parses_into_metrics() {
+        let Some(k6) = k6_or_skip("real_k6_summary_parses_into_metrics") else { return };
+        let script = write_fixture("metrics");
+
+        let out = run_k6_like_the_app(&k6, &script.to_string_lossy(), &plain_opts());
+        assert!(out.status.success(), "k6 run failed");
+        let stdout = String::from_utf8_lossy(&out.stdout);
+
+        let metrics = parse_metrics(&stdout);
+        assert!(
+            !metrics.is_empty(),
+            "no metrics parsed from real k6 output:\n{stdout}"
+        );
+        let names: Vec<&str> = metrics.iter().map(|m| m.name.as_str()).collect();
+        assert!(
+            names.contains(&"iterations"),
+            "expected an `iterations` metric, got {names:?}"
+        );
+        let _ = std::fs::remove_file(&script);
+    }
+
+    #[test]
+    fn a_missing_script_fails_instead_of_hanging() {
+        let Some(k6) = k6_or_skip("a_missing_script_fails_instead_of_hanging") else { return };
+        let missing = std::env::temp_dir().join("perf-pilot-it/definitely-absent.js");
+        let out = run_k6_like_the_app(&k6, &missing.to_string_lossy(), &plain_opts());
+        assert!(
+            !out.status.success(),
+            "k6 should fail on a missing script but exited 0"
+        );
+    }
 }
