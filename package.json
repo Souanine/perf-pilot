@@ -1,7 +1,7 @@
 {
   "name": "perf-pilot",
   "private": true,
-  "version": "0.1.1",
+  "version": "0.1.2",
   "license": "MIT",
   "type": "module",
   "description": "PerfPilot - AI-Native Performance Testing Platform (Tauri 2 + Vue 3 + k6)",
