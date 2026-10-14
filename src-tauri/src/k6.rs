@@ -149,7 +149,7 @@ impl K6Runner {
         window: tauri::Window,
     ) -> Result<PreparedRun, String> {
         // Snapshot runner state from the shared vector.
-        let (run_id, _script_path, options, started_at, target_idx) = {
+        let (run_id, script_path, options, started_at, target_idx) = {
             let guard = runners.lock().await;
             let r = match guard.get(idx) {
                 Some(r) => r,
@@ -176,8 +176,10 @@ impl K6Runner {
         let k6_path = which_k6().unwrap_or_else(|| "k6".to_string());
         let k6_version = read_k6_version(&k6_path).unwrap_or_else(|_| "unknown".to_string());
 
-        let args = build_k6_args(&options);
+        let args = build_k6_args(&script_path, &options);
         let env = merge_env(&options);
+        // Surface the command we are actually going to exec, not a
+        // partial reconstruction of it.
         let mut command_vec: Vec<String> = vec![k6_path.clone()];
         command_vec.extend(args.iter().cloned());
 
@@ -459,12 +461,17 @@ impl K6Runner {
 
 // --- Pure-function helpers (unit-testable, no I/O) --------------------
 
-/// Build the k6 CLI argument vector: passes `options.cli_args` straight
-/// through. The "run" subcommand and the script path are added by the
-/// caller. Centralised here so future `RunOptions` fields (e.g. setup
-/// scripts, env files) can be folded in without touching `prepare_run`.
-fn build_k6_args(options: &RunOptions) -> Vec<String> {
-    options.cli_args.clone()
+/// Build the full k6 CLI argument vector for `k6 run`.
+///
+/// Shape: `run <cli_args...> <script>` — flags precede the script, which
+/// is the form k6 documents. The `run` subcommand and the script path
+/// are load-bearing: omitting them makes k6 print usage and exit, which
+/// is exactly the "the script won't run" symptom this guards against.
+fn build_k6_args(script_path: &str, options: &RunOptions) -> Vec<String> {
+    let mut args = vec!["run".to_string()];
+    args.extend(options.cli_args.iter().cloned());
+    args.push(script_path.to_string());
+    args
 }
 
 /// Merge env vars from `RunOptions`. Today this is a passthrough; the seam
@@ -741,7 +748,12 @@ http_reqs...................: 0    100    10/s
     }
 
     #[test]
-    fn build_k6_args_passes_cli_args_through() {
+    fn build_k6_args_includes_run_subcommand_and_script() {
+        // Regression guard: the vector used to be just `cli_args`, so the
+        // spawned process was `k6 --quiet` with no subcommand and no
+        // script — k6 prints usage and exits, and the UI reported a run
+        // that could never do anything. `run` and the script path are
+        // load-bearing, not decoration.
         let opts = RunOptions {
             label: None,
             env: HashMap::new(),
@@ -749,20 +761,46 @@ http_reqs...................: 0    100    10/s
             max_duration_seconds: 0,
         };
         assert_eq!(
-            build_k6_args(&opts),
-            vec!["--summary-trend-stats=p(95)".to_string(), "--quiet".to_string()]
+            build_k6_args("/app/scripts/smoke.js", &opts),
+            vec![
+                "run".to_string(),
+                "--summary-trend-stats=p(95)".to_string(),
+                "--quiet".to_string(),
+                "/app/scripts/smoke.js".to_string(),
+            ]
         );
     }
 
     #[test]
-    fn build_k6_args_empty_when_no_overrides() {
+    fn build_k6_args_still_runs_with_no_cli_overrides() {
         let opts = RunOptions {
             label: None,
             env: HashMap::new(),
             cli_args: vec![],
             max_duration_seconds: 0,
         };
-        assert!(build_k6_args(&opts).is_empty());
+        assert_eq!(
+            build_k6_args("/app/scripts/smoke.js", &opts),
+            vec!["run".to_string(), "/app/scripts/smoke.js".to_string()]
+        );
+    }
+
+    /// The arguments must form a command k6 actually accepts. Shelling
+    /// out to `k6 run --help`-free validation isn't possible without
+    /// invoking the binary, so this asserts the structural invariant:
+    /// `run` is first and the script is last.
+    #[test]
+    fn build_k6_args_shape_is_run_then_flags_then_script() {
+        let opts = RunOptions {
+            label: None,
+            env: HashMap::new(),
+            cli_args: vec!["--vus".into(), "2".into()],
+            max_duration_seconds: 0,
+        };
+        let args = build_k6_args("/s.js", &opts);
+        assert_eq!(args.first().map(String::as_str), Some("run"));
+        assert_eq!(args.last().map(String::as_str), Some("/s.js"));
+        assert!(!args.iter().any(|a| a.is_empty()));
     }
 
     #[test]

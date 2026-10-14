@@ -197,7 +197,7 @@ export default {
     cliArgsLabel: "CLI args",
     cliArgsPlaceholder: "--summary-trend-stats=p(95) --quiet",
     startRun: "Start run",
-    liveAndRecent: "Live & recent",
+    liveAndRecent: "Running now",
     pickScriptFirst: "Pick a script first",
     noRunsYet: "No runs yet.",
     pickScriptToSeeLive: "Pick a script and start a run to see live output.",

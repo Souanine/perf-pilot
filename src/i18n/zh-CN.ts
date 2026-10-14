@@ -191,7 +191,7 @@ export default {
     cliArgsLabel: "CLI 参数",
     cliArgsPlaceholder: "--summary-trend-stats=p(95) --quiet",
     startRun: "开始运行",
-    liveAndRecent: "实时 & 最近",
+    liveAndRecent: "实时运行",
     pickScriptFirst: "请先选择一个脚本",
     noRunsYet: "暂无运行。",
     pickScriptToSeeLive: "选一个脚本然后开始运行，查看实时输出。",

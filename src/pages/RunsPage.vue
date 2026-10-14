@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from "vue";
-import { useRoute, useRouter } from "vue-router";
+import { useRoute } from "vue-router";
 import { useI18n } from "vue-i18n";
 import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import {
@@ -27,7 +27,7 @@ import { useScriptsStore } from "@/stores/scripts";
 import { useRunsStore, type LiveRun } from "@/stores/runs";
 import { useAppStore } from "@/stores/app";
 import { useToastStore } from "@/stores/toast";
-import { formatDuration, relativeTime } from "@/lib/utils";
+import { formatDuration } from "@/lib/utils";
 import { parseEnvLines, shellSplit } from "@/lib/shellSplit";
 
 const scripts = useScriptsStore();
@@ -35,7 +35,6 @@ const runs = useRunsStore();
 const app = useAppStore();
 const toast = useToastStore();
 const route = useRoute();
-const router = useRouter();
 const { t } = useI18n();
 
 const selectedRunId = ref<string | null>(null);
@@ -46,8 +45,10 @@ const scriptPath = ref<string>(route.query.script?.toString() ?? "");
 
 const selectedRun = computed(() => {
   const id = selectedRunId.value;
-  if (!id) return runs.liveList[0];
-  return runs.live[id] ?? runs.liveList.find((r) => r.run_id === id) ?? runs.liveList[0];
+  // Only in-flight runs live on this page; finished ones belong to the
+  // History page, which already renders them in full.
+  if (!id) return runs.running[0];
+  return runs.running.find((r) => r.run_id === id) ?? runs.running[0];
 });
 
 const scriptOptions = computed(() => [
@@ -251,7 +252,7 @@ onMounted(async () => {
       </div>
       <ScrollArea class="flex-1">
         <ul class="space-y-0.5 p-2">
-          <li v-for="r in runs.liveList" :key="r.run_id">
+          <li v-for="r in runs.running" :key="r.run_id">
             <button
               class="group flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent"
               :class="selectedRun?.run_id === r.run_id ? 'bg-accent' : ''"
@@ -268,19 +269,7 @@ onMounted(async () => {
               <span class="text-xs text-muted-foreground">{{ elapsed(r) }}</span>
             </button>
           </li>
-          <li v-for="r in runs.history.slice(0, 10)" :key="r.run_id">
-            <button
-              class="flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-sm transition-colors hover:bg-accent"
-              @click="router.push(`/history?run=${r.run_id}`)"
-            >
-              <Badge :variant="statusBadge(r.status)" class="shrink-0">{{ r.status }}</Badge>
-              <span class="min-w-0 flex-1 truncate">
-                {{ r.label || r.script_path.split(/[\\/]/).pop() }}
-              </span>
-              <span class="text-xs text-muted-foreground">{{ relativeTime(r.started_at) }}</span>
-            </button>
-          </li>
-          <li v-if="!runs.liveList.length && !runs.history.length" class="px-2 py-3 text-xs text-muted-foreground">
+          <li v-if="!runs.running.length" class="px-2 py-3 text-xs text-muted-foreground">
             {{ t('runs.noRunsYet') }}
           </li>
         </ul>
