@@ -1,9 +1,11 @@
+# Transient probe added while diagnosing stalled runners — all it does is
+# echo and print the date. Delete if it becomes noise; it was never a gate.
 name: Sanity (echo)
 on:
   workflow_dispatch:
 jobs:
   test:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04
     steps:
       - run: echo hello
       - run: date
