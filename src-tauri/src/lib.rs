@@ -7,7 +7,10 @@ pub mod fs;
 pub mod k6;
 pub mod llm;
 pub mod llm_stream;
+pub mod secrets;
 pub mod settings;
+
+use secrets::{secret_delete, secret_get, secret_set};
 
 use k6::{K6Info, K6Runner, RunOptions, RunOutput};
 use llm::{ChatMessage, LlmProviderConfig, ReportGenRequest, ReportGenResponse, ScriptGenRequest, ScriptGenResponse};
@@ -285,6 +288,9 @@ pub fn run() {
             list_reports,
             read_report,
             delete_report,
+            secret_get,
+            secret_set,
+            secret_delete,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

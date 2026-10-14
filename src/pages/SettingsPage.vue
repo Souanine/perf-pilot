@@ -458,8 +458,18 @@ onMounted(async () => {
           <div class="rounded-md border border-amber-500/30 bg-amber-100 p-3 text-xs text-amber-900 dark:bg-amber-500/20 dark:text-amber-200">
             <AlertTriangle class="mr-1 inline h-3 w-3" />
             {{ t('settings.apiKeyHint') }}
-            (<code class="font-mono">{{ "{app_data_dir}/perf-pilot.settings.json" }}</code>).
-            On macOS this is <code class="font-mono">~/Library/Application Support/dev.perfpilot.app/</code>.
+          </div>
+          <!-- Credential store unreachable: keys fall back to the settings
+               file, which the user must know about or they will assume the
+               key is protected. -->
+          <div
+            v-if="llm.secretStoreError"
+            role="alert"
+            class="rounded-md border border-red-500/40 bg-red-100 p-3 text-xs text-red-900 dark:bg-red-500/20 dark:text-red-200"
+          >
+            <AlertTriangle class="mr-1 inline h-3 w-3" />
+            {{ t('settings.secretStoreError') }}
+            <code class="font-mono">{{ llm.secretStoreError }}</code>
           </div>
         </CardContent>
       </Card>

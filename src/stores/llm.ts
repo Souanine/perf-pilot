@@ -20,6 +20,12 @@ async function getStore(): Promise<Store> {
   return storeHandle;
 }
 
+/** Provider id → key currently held in the OS credential store. Lets
+ *  `syncSecrets` skip writes when a key hasn't changed — the Settings
+ *  form fires a mutation per keystroke, and hitting the Keychain on
+ *  each one would be both slow and prompt-spam. */
+const storedKeys = new Map<string, string>();
+
 /** Build a v4-ish unique id without pulling in the `uuid` npm package.
  *  crypto.randomUUID is available in every modern WebView Tauri 2 ships. */
 function newId(): string {
@@ -131,9 +137,80 @@ export const useLLMStore = defineStore("llm", () => {
   const ready = ref(false);
   const testResults = ref<Record<string, LlmTestResult | null>>({});
 
+  /** Set when the OS credential store could not be reached. Surfaced in
+   *  Settings so a locked or unavailable store is visible instead of
+   *  silently dropping keys. */
+  const secretStoreError = ref<string | null>(null);
+
   const active = computed(
     () => providers.value.find((p) => p.id === activeId.value) ?? providers.value[0],
   );
+
+  /** Read every provider's key into memory from the OS credential store,
+   *  migrating any key still sitting in plaintext in the settings JSON.
+   *
+   *  Returns true when at least one legacy key was migrated, which means
+   *  the JSON on disk still has to be rewritten to drop it. */
+  async function loadSecrets(): Promise<boolean> {
+    let migrated = false;
+    for (const p of providers.value) {
+      let key: string | null = null;
+      try {
+        key = await api.secretGet(p.id);
+      } catch (e) {
+        // An unreachable store must not block startup — the app stays
+        // usable and the user can re-enter the key. Report it so the
+        // Settings page can warn.
+        secretStoreError.value = e instanceof Error ? e.message : String(e);
+        console.error(`read keychain entry for provider ${p.id} failed`, e);
+      }
+      if (key === null && p.api_key) {
+        // Legacy build persisted this key in plaintext. Move it across,
+        // then let `persist` strip it from the JSON.
+        try {
+          await api.secretSet(p.id, p.api_key);
+          key = p.api_key;
+          migrated = true;
+        } catch (e) {
+          // Leave `p.api_key` alone; the JSON still holds it, so a later
+          // run can retry the migration.
+          console.error(`migrate key for provider ${p.id} failed`, e);
+        }
+      }
+      p.api_key = key ?? "";
+      storedKeys.set(p.id, p.api_key);
+    }
+    return migrated;
+  }
+
+  /** Push changed keys to the credential store. Returns normally even
+   *  when a write fails — `persist` uses `storedKeys` to decide whether
+   *  each key is safe to strip from the JSON. */
+  async function syncSecrets(): Promise<void> {
+    for (const p of providers.value) {
+      const desired = p.api_key ?? "";
+      const previous = storedKeys.get(p.id);
+      if (desired === previous) continue;
+      // Freshly-built default providers have no stored key and an empty
+      // one — don't bother the credential store with a delete.
+      if (desired === "" && !previous) {
+        storedKeys.set(p.id, "");
+        continue;
+      }
+      try {
+        if (desired === "") {
+          await api.secretDelete(p.id);
+        } else {
+          await api.secretSet(p.id, desired);
+        }
+        storedKeys.set(p.id, desired);
+        secretStoreError.value = null;
+      } catch (e) {
+        secretStoreError.value = e instanceof Error ? e.message : String(e);
+        console.error(`write keychain entry for provider ${p.id} failed`, e);
+      }
+    }
+  }
 
   async function hydrate() {
     const s = await getStore();
@@ -147,6 +224,11 @@ export const useLLMStore = defineStore("llm", () => {
     } else if (providers.value.length > 0) {
       // First-time launch with no active id — default to first provider.
       activeId.value = providers.value[0].id;
+    }
+    // Runs before `ready` so the first render already carries usable
+    // keys, and rewrites the JSON when it migrated one out of plaintext.
+    if (await loadSecrets()) {
+      await persist();
     }
     ready.value = true;
   }
@@ -207,6 +289,12 @@ export const useLLMStore = defineStore("llm", () => {
     if (activeId.value === id && providers.value.length > 0) {
       activeId.value = providers.value[0].id;
     }
+    // Drop the key too, otherwise it lingers in the OS store forever
+    // after the provider is gone from the UI.
+    storedKeys.delete(id);
+    api.secretDelete(id).catch((e) =>
+      console.error(`delete orphaned key for provider ${id} failed`, e),
+    );
     schedulePersist();
   }
 
@@ -236,10 +324,22 @@ export const useLLMStore = defineStore("llm", () => {
   }
 
   async function persist() {
+    // Sync secrets FIRST. If the credential store rejects a write we must
+    // not strip that key from the JSON, or it exists nowhere on disk.
+    await syncSecrets();
     const s = await getStore();
-    await s.set(KEY_PROVIDERS, providers.value);
+    await s.set(KEY_PROVIDERS, providers.value.map(stripPersistedKey));
     await s.set(KEY_ACTIVE, activeId.value);
     await s.save();
+  }
+
+  /** Drop `api_key` for providers whose key is safely in the credential
+   *  store. A provider whose key failed to persist keeps its plaintext
+   *  value in the JSON as a fallback, so a locked or unavailable store
+   *  degrades to the old behaviour instead of destroying the key. */
+  function stripPersistedKey(p: LlmProviderConfig): Omit<LlmProviderConfig, "api_key"> | LlmProviderConfig {
+    const { api_key, ...rest } = p;
+    return storedKeys.get(p.id) === (api_key ?? "") ? rest : p;
   }
 
   /** Debounced variant used by every mutator + the deep watcher below.
@@ -292,6 +392,7 @@ export const useLLMStore = defineStore("llm", () => {
     active,
     ready,
     testResults,
+    secretStoreError,
     hydrate,
     setActive,
     setActiveModel,

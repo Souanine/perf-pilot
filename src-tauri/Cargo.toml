@@ -33,6 +33,25 @@ url = "2"
 regex = "1"
 once_cell = "1"
 
+# keyring 3.x ships NO default features. Without an explicit platform
+# backend macOS silently falls back to `mock` (an in-memory no-op):
+# set_password "succeeds" and the key is gone after restart. The
+# backends are re-exported as our own default features (see [features])
+# so stripping one is a visible change to *this* crate's defaults rather
+# than a subtle edit to a dependency line. `crypto-rust` avoids an
+# OpenSSL system dependency. Keep the sync/async secret-service
+# features mutually exclusive — keyring compile_error!s if both are on.
+keyring = { version = "3.6.3", default-features = false, features = [
+  "crypto-rust",
+] }
+
+[features]
+default = ["keychain-macos", "keychain-windows", "keychain-linux"]
+
+keychain-macos = ["keyring/apple-native"]
+keychain-windows = ["keyring/windows-native"]
+keychain-linux = ["keyring/sync-secret-service"]
+
 [profile.release]
 panic = "abort"
 codegen-units = 1

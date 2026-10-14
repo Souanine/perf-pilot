@@ -251,7 +251,11 @@ export default {
     saveProvider: "保存 provider",
     typeLabel: "类型",
     apiKeyHint:
-      "API key 以明文存储在 OS 用户配置目录中。macOS 上位于 ~/Library/Application Support/dev.perfpilot.app/。",
+      "API key 存储在系统凭据管理器中（macOS 钥匙串 / Windows 凭据管理器 / Linux Secret Service），不会写入配置文件。非敏感设置仍保存在 perf-pilot.settings.json。",
+    secretStoreError:
+      "无法访问系统凭据管理器。密钥暂时无法安全保存，已退回明文存入配置文件——待凭据管理器可用后请重新填写。",
+    secretStoreFallback:
+      "该密钥未能迁移到系统凭据管理器，目前仍以明文存储在配置文件中。",
     baseUrlRequired: "Base URL 和 model 必填",
     providerAdded: "Provider 已添加",
     models: "模型",

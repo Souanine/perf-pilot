@@ -6,14 +6,49 @@ const storeApi = vi.hoisted(() => {
   return {
     saveCount: 0,
     setCount: 0,
+    /** Seed data `get` returns — stands in for the on-disk settings
+     *  JSON. Kept separate from `values` so a spec can assert on what a
+     *  persist wrote without that write feeding back into a later read. */
+    seed: new Map<string, unknown>(),
+    /** Last value written per key — lets specs assert on what actually
+     *  lands in the settings JSON (used to prove api_key never does). */
+    values: new Map<string, unknown>(),
   };
 });
 
+/** In-memory stand-in for the OS credential store. */
+const secretStore = vi.hoisted(() => {
+  return {
+    map: new Map<string, string>(),
+    failReads: false,
+    failWrites: false,
+  };
+});
+
+vi.mock("@/lib/tauri", () => ({
+  api: {
+    secretGet: vi.fn(async (id: string) => {
+      if (secretStore.failReads) throw new Error("keychain locked");
+      return secretStore.map.get(id) ?? null;
+    }),
+    secretSet: vi.fn(async (id: string, value: string) => {
+      if (secretStore.failWrites) throw new Error("keychain locked");
+      secretStore.map.set(id, value);
+    }),
+    secretDelete: vi.fn(async (id: string) => {
+      if (secretStore.failWrites) throw new Error("keychain locked");
+      secretStore.map.delete(id);
+    }),
+    testLlm: vi.fn(async () => ({ ok: true, message: "mock" })),
+  },
+}));
+
 vi.mock("@tauri-apps/plugin-store", () => {
   const handle = {
-    get: vi.fn(async () => undefined),
-    set: vi.fn(async () => {
+    get: vi.fn(async (key: string) => storeApi.seed.get(key)),
+    set: vi.fn(async (key: string, value: unknown) => {
       storeApi.setCount += 1;
+      storeApi.values.set(key, value);
     }),
     save: vi.fn(async () => {
       storeApi.saveCount += 1;
@@ -298,5 +333,126 @@ describe("useLLMStore (new shape)", () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+describe("secret store (keys never land in the settings JSON)", () => {
+  beforeEach(() => {
+    storeApi.seed.clear();
+    storeApi.values.clear();
+    storeApi.saveCount = 0;
+    storeApi.setCount = 0;
+    secretStore.map.clear();
+    secretStore.failReads = false;
+    secretStore.failWrites = false;
+  });
+
+  /** Provider as an older build would have written it to the JSON. */
+  function onDiskProvider(over: Record<string, unknown> = {}) {
+    return {
+      id: "p1",
+      name: "MiniMax",
+      api_format: "anthropic_messages",
+      base_url: "https://api.example/anthropic",
+      model: "m1",
+      organization: null,
+      temperature: 0.2,
+      models: [{ id: "m1", label: "m1" }],
+      ...over,
+    };
+  }
+
+  it("hydrate pulls the key out of the credential store", async () => {
+    storeApi.seed.set("llm.providers", [onDiskProvider()]);
+    storeApi.seed.set("llm.active", "p1");
+    secretStore.map.set("p1", "sk-from-keychain");
+
+    const llm = useLLMStore();
+    await llm.hydrate();
+
+    expect(llm.activeId).toBe("p1");
+    expect(llm.active.api_key).toBe("sk-from-keychain");
+  });
+
+  it("does not write api_key into the settings JSON", async () => {
+    const llm = useLLMStore();
+    await llm.hydrate();
+    await llm.updateProvider(llm.activeId, { api_key: "sk-super-secret" });
+    await llm.flushPersist();
+
+    const persisted = storeApi.values.get("llm.providers") as Array<Record<string, unknown>>;
+    expect(persisted.length).toBeGreaterThan(0);
+    for (const entry of persisted) {
+      expect(entry).not.toHaveProperty("api_key");
+    }
+    // ...and the key really did reach the credential store.
+    expect(secretStore.map.get(llm.activeId)).toBe("sk-super-secret");
+  });
+
+  it("migrates a legacy plaintext key into the credential store and strips it", async () => {
+    // Simulate an older build's on-disk JSON: the provider carries a
+    // plaintext api_key and nothing is in the keychain yet.
+    storeApi.seed.set("llm.providers", [
+      onDiskProvider({ api_key: "sk-legacy-plaintext" }),
+    ]);
+    storeApi.seed.set("llm.active", "p1");
+
+    const llm = useLLMStore();
+    await llm.hydrate();
+
+    expect(secretStore.map.get("p1")).toBe("sk-legacy-plaintext");
+    expect(llm.active.api_key).toBe("sk-legacy-plaintext");
+
+    // The rewritten JSON must no longer contain the secret.
+    const persisted = storeApi.values.get("llm.providers") as Array<Record<string, unknown>>;
+    expect(persisted.length).toBeGreaterThan(0);
+    expect(persisted.find((e) => e.id === "p1")).toBeDefined();
+    expect(JSON.stringify(persisted)).not.toContain("sk-legacy-plaintext");
+  });
+
+  it("keeps the key in the JSON when the credential store rejects the write", async () => {
+    secretStore.failWrites = true;
+    const llm = useLLMStore();
+    await llm.hydrate();
+    await llm.updateProvider(llm.activeId, { api_key: "sk-cannot-store" });
+    await llm.flushPersist();
+
+    // Data-loss guard: if the key never made it to the keychain, the
+    // plaintext fallback must stay in the JSON rather than vanishing.
+    const persisted = storeApi.values.get("llm.providers") as Array<Record<string, unknown>>;
+    const entry = persisted.find((e) => e.id === llm.activeId);
+    expect(entry?.api_key).toBe("sk-cannot-store");
+    expect(llm.secretStoreError).toBeTruthy();
+  });
+
+  it("reports an unreachable credential store instead of failing startup", async () => {
+    secretStore.failReads = true;
+    const llm = useLLMStore();
+    await expect(llm.hydrate()).resolves.toBeUndefined();
+    expect(llm.ready).toBe(true);
+    expect(llm.secretStoreError).toBe("keychain locked");
+  });
+
+  it("removeProvider deletes the orphaned key", async () => {
+    secretStore.map.set("doomed", "sk-orphan");
+    const llm = useLLMStore();
+    await llm.hydrate();
+    await llm.addProvider({
+      id: "doomed",
+      name: "Doomed",
+      api_format: "chat_completions",
+      base_url: "https://api.example/v1",
+      api_key: "sk-orphan",
+      model: "m1",
+      organization: null,
+      temperature: 0.2,
+      models: [{ id: "m1", label: "m1" }],
+    });
+    await llm.flushPersist();
+    expect(secretStore.map.get("doomed")).toBe("sk-orphan");
+
+    await llm.removeProvider("doomed");
+    await llm.flushPersist();
+
+    expect(secretStore.map.has("doomed")).toBe(false);
   });
 });

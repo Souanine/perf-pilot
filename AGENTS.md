@@ -11,7 +11,7 @@ Tauri 2 desktop app that turns natural-language intents into runnable k6 load-te
 | Path | What |
 |---|---|
 | `src/` | Vue 3 frontend (components, pages, stores, lib, composables, i18n, router) |
-| `src-tauri/src/` | Rust backend — `main.rs`/`lib.rs`, `k6.rs` runner, `llm.rs` + `llm_stream.rs` providers, `fs.rs` script IO, `settings.rs` persistence |
+| `src-tauri/src/` | Rust backend — `main.rs`/`lib.rs`, `k6.rs` runner, `llm.rs` + `llm_stream.rs` providers, `fs.rs` script IO, `settings.rs` persistence, `secrets.rs` OS credential store |
 | `src-tauri/binaries/` | k6 sidecar binaries, **gitignored**, fetched per-host via `scripts/fetch-k6.sh` |
 | `src-tauri/build.rs` | Exports `PERFPILOT_TARGET_TRIPLE` so Rust resolves the sidecar filename at runtime |
 | `e2e/` | Playwright specs — drives Vite dev server with Tauri IPC stubbed via `mock-tauri.ts` |
@@ -31,7 +31,7 @@ npm run dev                               # Vite dev server (frontend only)
 npm run tauri:dev                         # full desktop app
 npm run typecheck                         # vue-tsc --noEmit
 
-# Tests (current counts: 47 cargo, 9 Playwright specs)
+# Tests (current counts: 51 cargo, 159 Vitest, 9 Playwright specs)
 npm run test                              # Vitest (jsdom)
 cd src-tauri && cargo test --lib          # Rust unit tests
 npx playwright install chromium          # one-time, before first e2e
@@ -86,6 +86,7 @@ When adding IPC commands in Rust, also stub them in `e2e/mock-tauri.ts` — miss
 
 - `src-tauri/src/k6.rs` — k6 runner, metric parser, sidecar resolution. Touching this affects every test run.
 - `src-tauri/src/lib.rs` — Tauri command surface (`run_k6`, `generate_script_stream`, etc.). Each new command needs `e2e/mock-tauri.ts` stub.
+- `src-tauri/src/secrets.rs` — OS credential store for LLM API keys (`secret_get`/`secret_set`/`secret_delete`).
 - `.github/workflows/release.yml` — adding a new platform? Add a `matrix.include` entry + map it in `scripts/fetch-k6.sh`.
 
 ## Conventions
@@ -94,6 +95,34 @@ When adding IPC commands in Rust, also stub them in `e2e/mock-tauri.ts` — miss
 - Comments only when they state a constraint the code can't show. No narrating-the-line.
 - Frontend state goes in Pinia stores, not in components. Composables (`src/composables/`) for cross-component reactive logic.
 - Rust errors returned from `#[tauri::command]` are `Result<T, String>` — stringified for IPC.
+
+## LLM provider API keys live in the OS credential store
+
+Keys are **not** in `perf-pilot.settings.json`. `src-tauri/src/secrets.rs` wraps
+`keyring`: macOS Keychain / Windows Credential Manager / Linux Secret Service,
+entries namespaced by `SERVICE` and keyed by provider id. The settings JSON keeps
+only non-secret config; `llm.ts` strips `api_key` on persist and pulls it back
+during `hydrate`, migrating any plaintext key left by an older build.
+
+Gotchas:
+
+- **`keyring` 3.x ships no default features.** Omitting the platform backend makes
+  macOS silently fall back to `mock` — an in-memory no-op where every write
+  "succeeds" and the key is gone on restart. The backends are re-exported as this
+  crate's own `keychain-macos` / `keychain-windows` / `keychain-linux` default
+  features in `Cargo.toml` precisely so they can't be dropped by accident.
+- **`SERVICE` in `secrets.rs` is hardcoded to `dev.perfpilot.app` and must stay in
+  sync with `identifier` in `tauri.conf.json`.** Changing the bundle identifier
+  changes where the settings JSON lives but *not* where the keys live, so every
+  key silently reads back as empty. There's no API to enumerate keychain entries,
+  so the old ones can't be migrated — only re-entered.
+- `persist()` syncs secrets **before** writing the JSON, and only strips `api_key`
+  for providers whose key is confirmed stored. If the credential store is locked
+  or unavailable, the plaintext value stays in the JSON rather than the key being
+  destroyed. `llm.secretStoreError` surfaces this in Settings.
+- The key still crosses IPC in plaintext on `test_llm` / `generate_script`. This
+  closes the *at-rest* exposure only; keeping keys out of renderer memory would
+  mean moving provider lookup into Rust.
 
 ## Known issues / non-obvious choices
 

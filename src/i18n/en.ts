@@ -258,7 +258,11 @@ export default {
     saveProvider: "Save provider",
     typeLabel: "Type",
     apiKeyHint:
-      "API keys are stored in cleartext inside the OS user-config directory. On macOS this is ~/Library/Application Support/dev.perfpilot.app/.",
+      "API keys are stored in the OS credential store (macOS Keychain / Windows Credential Manager / Linux Secret Service), never in the settings file. Non-secret settings stay in perf-pilot.settings.json.",
+    secretStoreError:
+      "The OS credential store could not be reached. Keys cannot be saved securely, so they are kept in the settings file for now — re-enter them once the store is available.",
+    secretStoreFallback:
+      "This key could not be moved to the OS credential store, so it is still stored in cleartext in the settings file.",
     baseUrlRequired: "Base URL and model are required",
     providerAdded: "Provider added",
     models: "Models",

@@ -230,6 +230,21 @@ export const api = {
   listReports: () => invoke<ReportRecord[]>("list_reports"),
   readReport: (runId: string) => invoke<string>("read_report", { runId }),
   deleteReport: (runId: string) => invoke<void>("delete_report", { runId }),
+
+  // --- Secret store -------------------------------------------------------
+  // Provider API keys live in the OS credential store (macOS Keychain /
+  // Windows Credential Manager / Linux Secret Service), never in
+  // perf-pilot.settings.json. See src-tauri/src/secrets.rs.
+
+  /** Read a provider's stored key, or `null` when none is stored. */
+  secretGet: (providerId: string) =>
+    invoke<string | null>("secret_get", { providerId }),
+  /** Store (or overwrite) a provider's key. */
+  secretSet: (providerId: string, value: string) =>
+    invoke<void>("secret_set", { providerId, value }),
+  /** Remove a provider's key. Succeeds when no key was stored. */
+  secretDelete: (providerId: string) =>
+    invoke<void>("secret_delete", { providerId }),
 };
 
 // Events

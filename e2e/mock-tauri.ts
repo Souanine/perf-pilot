@@ -170,6 +170,11 @@ export async function installTauriMocks(page: Page, spec: MockSpec = {}) {
     // get/set/has/delete/save/etc. key into a Map by rid.
     let nextRid = 1;
     const stores = new Map();
+    // Stand-in for the OS credential store (keychain / Credential
+    // Manager / Secret Service). Deliberately separate from `stores` so a
+    // spec asserting on the settings JSON can't see keys that the real
+    // backend keeps out of it.
+    const secrets = new Map<string, string>();
     // plugin-event protocol: listen/emit route through invoke.
     const eventHandlers = new Map(); // event -> Map<handlerId, callback>
     let nextHandlerId = 1;
@@ -298,6 +303,17 @@ export async function installTauriMocks(page: Page, spec: MockSpec = {}) {
           return { report: "# Mock report\n\nAll good.", model: "mock", tokens_in: 10, tokens_out: 20 };
         case "read_report":
           return "# mock";
+        // Secret store — in-memory stand-in for the OS credential store.
+        // Keys must never round-trip through the plugin-store JSON, so
+        // these live in their own map, mirroring secrets.rs.
+        case "secret_get":
+          return secrets.get(args.providerId) ?? null;
+        case "secret_set":
+          secrets.set(args.providerId, args.value);
+          return null;
+        case "secret_delete":
+          secrets.delete(args.providerId);
+          return null;
         // plugin-store protocol
         case "plugin:store|load": {
           const rid = nextRid++;
