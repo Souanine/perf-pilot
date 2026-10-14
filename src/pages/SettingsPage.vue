@@ -353,7 +353,7 @@ onMounted(async () => {
                     <button
                       class="inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full border"
                       :class="p.model === m.id ? 'border-primary bg-primary' : 'border-border'"
-                      :aria-label="p.model === m.id ? t('settings.modelActive') : t('settings.modelPick')"
+                      :aria-label="p.model === m.id ? t('settings.modelInUse') : t('settings.modelPick')"
                       @click="pickModel(p.id, m.id)"
                     >
                       <span v-if="p.model === m.id" class="h-1.5 w-1.5 rounded-full bg-primary-foreground" />
@@ -363,7 +363,7 @@ onMounted(async () => {
                       — {{ m.label }}
                     </span>
                     <span v-if="p.model === m.id" class="ml-auto text-[10px] uppercase tracking-wider text-primary">
-                      {{ t('settings.modelActive') }}
+                      {{ t('settings.modelInUse') }}
                     </span>
                     <button
                       class="ml-auto rounded p-1 text-muted-foreground hover:bg-background hover:text-destructive"

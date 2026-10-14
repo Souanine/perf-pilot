@@ -67,3 +67,29 @@ test.describe("settings (LLM providers)", () => {
     await expect(page.getByText("Test proxy").first()).toBeVisible();
   });
 });
+
+test.describe("settings — model selection is not provider activation", () => {
+  test("picking a model marks it in use without activating the provider", async ({ page }) => {
+    await gotoApp(page, "/settings");
+    await waitForAppReady(page);
+
+    // The default provider is the active one; switch to a second card so
+    // an accidental activation would be visible.
+    const activeBadge = page.getByText(/^(active|激活)$/).first();
+    await expect(activeBadge).toBeVisible();
+
+    // Grab the second provider's card and click a non-active model row.
+    const modelButtons = page.locator("main button[aria-label='Use this model']");
+    const count = await modelButtons.count();
+    expect(count).toBeGreaterThan(0);
+    await modelButtons.first().click();
+
+    // Exactly one provider is still active, and it is the original one.
+    await expect(page.getByText(/^(active|激活)$/)).toHaveCount(1);
+
+    // The newly chosen model is labelled "In use", never "Active" — the
+    // two concepts must not share vocabulary.
+    await expect(page.locator("main").getByText(/^(In use|使用中)$/).first()).toBeVisible();
+    await expect(page.locator("main")).not.toContainText(/^(激活中|Active)$/);
+  });
+});

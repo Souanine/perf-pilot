@@ -263,7 +263,9 @@ export default {
     addModelPlaceholder: "gpt-4o-mini  |  GPT-4o mini（可选显示名）",
     firstModel: "首个模型 id",
     firstModelPlaceholder: "gpt-4o-mini",
-    modelActive: "激活中",
+    // “使用中”而非“激活中”：这里标记的是该 provider 实际发出去的模型，
+    // 并不会激活 provider。provider 的激活是卡片顶部的独立徽标/按钮。
+    modelInUse: "使用中",
     modelPick: "使用此模型",
     expand: "展开",
     collapse: "折叠",

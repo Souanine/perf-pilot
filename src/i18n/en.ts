@@ -270,7 +270,10 @@ export default {
     addModelPlaceholder: "gpt-4o-mini  |  GPT-4o mini (optional display name)",
     firstModel: "First model id",
     firstModelPlaceholder: "gpt-4o-mini",
-    modelActive: "Active",
+    // "In use", not "Active": this marks which model a provider sends,
+    // it does not activate the provider. Provider activation is the
+    // separate badge/button at the top of the card.
+    modelInUse: "In use",
     modelPick: "Use this model",
     expand: "Expand",
     collapse: "Collapse",
