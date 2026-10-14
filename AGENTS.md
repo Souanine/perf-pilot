@@ -108,9 +108,12 @@ Gotchas:
 
 - **`keyring` 3.x ships no default features.** Omitting the platform backend makes
   macOS silently fall back to `mock` — an in-memory no-op where every write
-  "succeeds" and the key is gone on restart. The backends are re-exported as this
-  crate's own `keychain-macos` / `keychain-windows` / `keychain-linux` default
-  features in `Cargo.toml` precisely so they can't be dropped by accident.
+  "succeeds" and the key is gone on restart. The backends are therefore pinned
+  to the **dependency** in `Cargo.toml`, not re-exported as this crate's own
+  optional features: Tauri CLI builds the app crate with `--no-default-features`,
+  so a crate-level flag would switch the credential store off in exactly the
+  builds that ship. Confirm with `cargo tree --no-default-features -e features`
+  that `security-framework` (the `apple-native` marker) is still present.
 - **`SERVICE` in `secrets.rs` is hardcoded to `dev.perfpilot.app` and must stay in
   sync with `identifier` in `tauri.conf.json`.** Changing the bundle identifier
   changes where the settings JSON lives but *not* where the keys live, so every

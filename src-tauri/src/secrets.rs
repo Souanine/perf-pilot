@@ -89,12 +89,11 @@ mod tests {
     /// features, and on macOS omitting `apple-native` swaps in an in-memory
     /// no-op where every call "succeeds" and keys evaporate on restart.
     /// keyring exposes no API to query the selected backend, so a same-process
-    /// round-trip cannot tell a real Keychain from the mock — see the
-    /// `keychain-macos` default feature in Cargo.toml, which is the actual
-    /// guard. This test still catches the case where the credential store is
-    /// entirely unreachable (locked keychain, missing entitlement, headless
-    /// Linux with no Secret Service), which is the failure users would
-    /// otherwise only discover by losing a key.
+    /// round-trip cannot tell a real Keychain from the mock — the actual guard
+    /// is the pinned dependency features in Cargo.toml. This test still catches
+    /// the case where the credential store is entirely unreachable (locked
+    /// keychain, missing entitlement, headless Linux with no Secret Service),
+    /// which is the failure users would otherwise only discover by losing a key.
     #[test]
     fn backend_reachable() {
         let e = test_entry("backend-probe");
