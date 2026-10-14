@@ -1,8 +1,15 @@
 # Build PerfPilot installers for every supported platform.
 #
 # Triggers:
-#   - push a tag matching `v*` (e.g. v0.1.0)
-#   - manual dispatch from the Actions tab
+#   - push a tag matching `v*` (e.g. v0.1.2)
+#
+# Deliberately no `workflow_dispatch`: GitHub CI is reserved for cutting a
+# release. Day-to-day builds happen locally (`npm run tauri:build`) --
+# faster, keeps runner minutes for real releases, and a broken main never
+# burns a matrix slot. The `release` job's `github.event_name == 'push'`
+# guard used to be what made dispatch runs build without publishing; with
+# the trigger removed it is the only thing standing between a matrix run
+# and a published release, so don't loosen it.
 #
 # Output artifacts (per platform, uploaded separately so they can be
 # downloaded independently):
@@ -32,7 +39,6 @@ on:
   push:
     tags:
       - 'v*'
-  workflow_dispatch:
 
 permissions:
   contents: write   # needed if/when a release-publish job is added later

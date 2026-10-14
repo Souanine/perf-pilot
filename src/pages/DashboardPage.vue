@@ -24,7 +24,7 @@ import {
   Cpu,
   Globe,
   FlaskConical,
-} from "lucide-vue-next";
+} from "@lucide/vue";
 import { relativeTime } from "@/lib/utils";
 
 const router = useRouter();

@@ -17,7 +17,7 @@
  * touch the DOM in nextTick() to avoid layout thrash.
  */
 import { computed, nextTick, onBeforeUnmount, ref, watch } from "vue";
-import { ChevronsDown } from "lucide-vue-next";
+import { ChevronsDown } from "@lucide/vue";
 
 const props = withDefaults(
   defineProps<{

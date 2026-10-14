@@ -30,7 +30,7 @@ import {
   Loader2,
   Eye,
   FileText,
-} from "lucide-vue-next";
+} from "@lucide/vue";
 
 const runs = useRunsStore();
 const route = useRoute();

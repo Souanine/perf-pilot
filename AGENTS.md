@@ -75,10 +75,10 @@ When adding IPC commands in Rust, also stub them in `e2e/mock-tauri.ts` — miss
 
 ## Release pipeline (`.github/workflows/release.yml`)
 
-1. Tag push (`v*`) or `workflow_dispatch` triggers `build` matrix.
+1. Tag push (`v*`) triggers the `build` matrix. There is deliberately **no `workflow_dispatch`** — day-to-day builds run locally via `npm run tauri:build`; CI is reserved for cutting a release.
 2. Windows x64 job only (macOS arm64 is **temporarily disabled**, see below): cache cargo → fetch k6 sidecar → `tauri build --target <triple>` → NSIS bundler.
 3. Artifacts: `PerfPilot-Windows-x64` (NSIS — 30 MB). `PerfPilot-macOS-arm64` (DMG) is not currently produced.
-4. `release` job (Ubuntu, only fires on tag push) downloads artifacts and publishes a GitHub Release via `softprops/action-gh-release@v2`. Re-runs via dispatch do NOT publish.
+4. `release` job (pinned to `ubuntu-24.04`, only fires on tag push) downloads artifacts and publishes a GitHub Release via `softprops/action-gh-release@v3`. Its `github.event_name == 'push'` guard is now the only thing separating a matrix run from a published release — don't loosen it.
 
 **macOS builds are temporarily disabled** (no Apple Developer account). An unsigned/un-notarized `.dmg` makes Gatekeeper report「应用已损坏」on launch, so the DMG is unusable for distribution — don't "fix" this by re-adding the macOS matrix entry alone. Restoring it requires uncommenting **both** the `macos-latest` matrix entry **and** the `Download macOS DMG` step + `artifacts/macos/*.dmg` glob in the `release` job; restoring only the first makes the publish job fail on `fail_on_unmatched_files: true`. Local macOS dev builds (`npm run tauri:dev`, `npm run tauri:release-dmg`) are unaffected.
 
@@ -129,6 +129,7 @@ Gotchas:
 
 ## Known issues / non-obvious choices
 
+- **A `STATIC_VCRUNTIME is deprecated` warning on Windows builds is not ours to fix.** GitHub's `windows-latest` image presets that env var, and `tauri-build` warns on sight of it. The replacement it suggests (`build.windows.staticVCRuntime` in `tauri.conf.json`) is honoured by the Rust config but **not yet accepted by the CLI's own JSON schema** — adding it fails validation with "Additional properties are not allowed". Behaviour is unchanged (static linking, which is Tauri's default), so leave it until Tauri closes the CLI/Rust schema gap.
 - macOS bundle identifier `dev.perfpilot.app` ends in `.app` — Tauri warns at build time. Not blocking; leave until packaging for the App Store is on the roadmap.
 - `npm run build` triggers the frontend typecheck (`vue-tsc --noEmit`) before Vite. CI uses `npm run typecheck` separately for fail-fast on type errors without paying Vite's bundle cost.
 - The e2e suite intentionally disables Playwright parallelism — see the comment in `playwright.config.ts`. Don't re-enable without auditing the `installTauriMocks` fixture for shared state.

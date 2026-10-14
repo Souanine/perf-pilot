@@ -11,7 +11,7 @@ import {
   ChevronDown,
   ChevronRight,
   Plus,
-} from "lucide-vue-next";
+} from "@lucide/vue";
 import Button from "@/components/ui/Button.vue";
 import Card from "@/components/ui/Card.vue";
 import CardContent from "@/components/ui/CardContent.vue";

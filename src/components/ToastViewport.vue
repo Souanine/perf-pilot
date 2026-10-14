@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed } from "vue";
 import { useToastStore } from "@/stores/toast";
-import { CheckCircle2, AlertCircle, AlertTriangle, Info, X } from "lucide-vue-next";
+import { CheckCircle2, AlertCircle, AlertTriangle, Info, X } from "@lucide/vue";
 import { cn } from "@/lib/utils";
 
 const toast = useToastStore();

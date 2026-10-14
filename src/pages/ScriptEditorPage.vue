@@ -13,7 +13,7 @@ import {
   FolderOpen,
   Sparkles,
   LayoutTemplate,
-} from "lucide-vue-next";
+} from "@lucide/vue";
 import { useScriptsStore } from "@/stores/scripts";
 import { useUiStore } from "@/stores/ui";
 import { useToastStore } from "@/stores/toast";

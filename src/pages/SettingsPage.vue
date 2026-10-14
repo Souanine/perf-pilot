@@ -12,7 +12,7 @@ import {
   ChevronRight,
   X,
   GripVertical,
-} from "lucide-vue-next";
+} from "@lucide/vue";
 import Card from "@/components/ui/Card.vue";
 import CardContent from "@/components/ui/CardContent.vue";
 import CardHeader from "@/components/ui/CardHeader.vue";

@@ -5,7 +5,7 @@ description = "PerfPilot - AI-Native Performance Testing Platform"
 authors = ["PerfPilot"]
 license = "MIT"
 edition = "2021"
-rust-version = "1.77"
+rust-version = "1.90"
 
 [lib]
 name = "perf_pilot_lib"

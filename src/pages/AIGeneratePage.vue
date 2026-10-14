@@ -16,7 +16,7 @@ import {
   Settings,
   History,
   Eraser,
-} from "lucide-vue-next";
+} from "@lucide/vue";
 import MonacoEditor from "@/components/MonacoEditor.vue";
 import Button from "@/components/ui/Button.vue";
 import Card from "@/components/ui/Card.vue";

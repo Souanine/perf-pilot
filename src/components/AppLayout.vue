@@ -17,7 +17,7 @@ import {
   Sparkles,
   Sun,
   Moon,
-} from "lucide-vue-next";
+} from "@lucide/vue";
 import { useUiStore } from "@/stores/ui";
 import { useAppStore } from "@/stores/app";
 import { LOCALE_LABELS } from "@/i18n";
