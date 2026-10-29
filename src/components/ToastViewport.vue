@@ -51,7 +51,9 @@ function icon(v?: string) {
         <component :is="icon(t.variant)" class="mt-0.5 h-4 w-4 shrink-0" />
         <div class="min-w-0 flex-1">
           <div v-if="t.title" class="text-sm font-semibold">{{ t.title }}</div>
-          <div v-if="t.description" class="text-xs opacity-90">{{ t.description }}</div>
+          <!-- break-all: paths have no spaces, so without it a long
+               absolute path overflows the fixed-width toast. -->
+          <div v-if="t.description" class="break-all text-xs opacity-90">{{ t.description }}</div>
         </div>
         <button
           class="rounded p-1 text-muted-foreground hover:bg-background/40"
