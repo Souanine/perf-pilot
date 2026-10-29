@@ -177,9 +177,11 @@ const hasChartData = computed(
                 {{ llmConfigured ? t('dashboard.envDetected') : t('dashboard.envNotConfigured') }}
               </Badge>
             </div>
-            <div class="flex items-center justify-between">
-              <span class="flex items-center gap-2"><FlaskConical class="h-4 w-4 text-muted-foreground" /> {{ t('dashboard.envScriptsDir') }}</span>
-              <code class="rounded bg-muted px-2 py-0.5 text-xs">{{ app.info?.scripts_dir || "—" }}</code>
+            <div class="flex items-center justify-between gap-3">
+              <span class="flex shrink-0 items-center gap-2"><FlaskConical class="h-4 w-4 text-muted-foreground" /> {{ t('dashboard.envScriptsDir') }}</span>
+              <!-- min-w-0 lets the code shrink below its content width inside
+                   the flex row; the full path stays reachable via the tooltip. -->
+              <code class="min-w-0 truncate rounded bg-muted px-2 py-0.5 text-xs" :title="app.info?.scripts_dir">{{ app.info?.scripts_dir || "—" }}</code>
             </div>
             <Button variant="outline" class="mt-2 w-full" @click="router.push('/settings')">
               <Settings class="h-4 w-4" /> {{ t('dashboard.configureLLM') }}

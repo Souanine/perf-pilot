@@ -98,9 +98,42 @@ fn extract_error_rate_pct(stdout: &str) -> Option<f64> {
     caps.get(1)?.as_str().parse().ok()
 }
 
+/// Key in `perf-pilot.settings.json` (the frontend-managed store-plugin
+/// file) under which a custom scripts directory is persisted. Rust only
+/// ever reads this file — the frontend owns writes — so there is no
+/// write contention with the store plugin.
+const SCRIPTS_DIR_KEY: &str = "scripts.dir";
+
+/// Effective scripts directory: the user's override from the settings
+/// JSON if present, else the platform default.
 pub fn scripts_dir(app: &tauri::AppHandle) -> anyhow::Result<PathBuf> {
-    let base = app.path().app_data_dir()?;
-    Ok(base.join("scripts"))
+    if let Some(dir) = scripts_dir_override(app) {
+        return Ok(dir);
+    }
+    default_scripts_dir(app)
+}
+
+/// `~/.perfpilot` on every platform. Deliberately *not* app_data_dir:
+/// that resolves to `~/Library/Application Support/...` on macOS vs
+/// `%APPDATA%\...` on Windows, which users can't find. The home dir is
+/// the same predictable location everywhere (`C:\Users\<name>\.perfpilot`
+/// on Windows).
+pub fn default_scripts_dir(app: &tauri::AppHandle) -> anyhow::Result<PathBuf> {
+    Ok(app.path().home_dir()?.join(".perfpilot"))
+}
+
+fn scripts_dir_override(app: &tauri::AppHandle) -> Option<PathBuf> {
+    let file = app.path().app_data_dir().ok()?.join("perf-pilot.settings.json");
+    let raw = std::fs::read_to_string(file).ok()?;
+    parse_scripts_dir_override(&raw).map(PathBuf::from)
+}
+
+/// Split out from `scripts_dir_override` so the JSON parsing is testable
+/// without an `AppHandle`. Blank / non-string values mean "no override".
+fn parse_scripts_dir_override(raw: &str) -> Option<String> {
+    let v: serde_json::Value = serde_json::from_str(raw).ok()?;
+    let s = v.get(SCRIPTS_DIR_KEY)?.as_str()?.trim();
+    (!s.is_empty()).then(|| s.to_string())
 }
 
 pub fn runs_dir(app: &tauri::AppHandle) -> anyhow::Result<PathBuf> {
@@ -111,9 +144,41 @@ pub fn runs_dir(app: &tauri::AppHandle) -> anyhow::Result<PathBuf> {
 pub fn ensure_dirs(app: &tauri::AppHandle) -> anyhow::Result<()> {
     let scripts = scripts_dir(app)?;
     let runs = runs_dir(app)?;
+    migrate_legacy_scripts(app, &scripts);
     std::fs::create_dir_all(&scripts)?;
     std::fs::create_dir_all(&runs)?;
     Ok(())
+}
+
+/// Pre-0.1.4 builds kept scripts in `<app_data_dir>/scripts`. When the
+/// default moved to `~/.perfpilot`, first launch copies any `.js` files
+/// from the old location so existing users don't lose their scripts.
+/// Best-effort and one-shot: only runs when no override is set and the
+/// target doesn't exist yet. The legacy dir is left in place as a backup.
+fn migrate_legacy_scripts(app: &tauri::AppHandle, target: &std::path::Path) {
+    if scripts_dir_override(app).is_some() || target.exists() {
+        return;
+    }
+    let Ok(legacy) = app.path().app_data_dir().map(|d| d.join("scripts")) else {
+        return;
+    };
+    if legacy == target || !legacy.is_dir() {
+        return;
+    }
+    let Ok(entries) = std::fs::read_dir(&legacy) else {
+        return;
+    };
+    let _ = std::fs::create_dir_all(target);
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("js") {
+            continue;
+        }
+        let dest = target.join(path.file_name().unwrap_or_default());
+        if !dest.exists() {
+            let _ = std::fs::copy(&path, &dest);
+        }
+    }
 }
 
 pub async fn list_scripts(app: &tauri::AppHandle) -> anyhow::Result<Vec<ScriptFile>> {
@@ -595,6 +660,28 @@ mod tests {
         let dir = tmpdir("listempty");
         let records = list_records(&dir).unwrap();
         assert!(records.is_empty());
+    }
+
+    #[test]
+    fn parse_scripts_dir_override_reads_key() {
+        assert_eq!(
+            parse_scripts_dir_override(r#"{"scripts.dir":"/tmp/pp-scripts"}"#).as_deref(),
+            Some("/tmp/pp-scripts")
+        );
+        // Whitespace is trimmed but content kept.
+        assert_eq!(
+            parse_scripts_dir_override(r#"{"scripts.dir":"  /x  "}"#).as_deref(),
+            Some("/x")
+        );
+    }
+
+    #[test]
+    fn parse_scripts_dir_override_absent_or_blank_is_none() {
+        assert_eq!(parse_scripts_dir_override("{}"), None);
+        assert_eq!(parse_scripts_dir_override(r#"{"scripts.dir":""}"#), None);
+        assert_eq!(parse_scripts_dir_override(r#"{"scripts.dir":"   "}"#), None);
+        assert_eq!(parse_scripts_dir_override(r#"{"scripts.dir":42}"#), None);
+        assert_eq!(parse_scripts_dir_override("not json"), None);
     }
 
     const K6_SUMMARY: &str = "\

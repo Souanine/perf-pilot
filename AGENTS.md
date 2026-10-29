@@ -17,7 +17,7 @@ Tauri 2 desktop app that turns natural-language intents into runnable k6 load-te
 | `e2e/` | Playwright specs — drives Vite dev server with Tauri IPC stubbed via `mock-tauri.ts` |
 | `scripts/fetch-k6.sh` | Per-platform k6 fetch (macOS/Linux/Windows) mapped from `rustc -vV` host triple |
 | `scripts/build-dmg.sh` | DMG bundling; takes optional target triple as `$1` |
-| `.github/workflows/release.yml` | Matrix build (**Windows x64 only** — macOS temporarily disabled, no signing cert) + auto-publishes GitHub Release on tag push |
+| `.github/workflows/release.yml` | Matrix build (Windows x64 + macOS arm64, macOS ad-hoc signed) + auto-publishes GitHub Release on tag push |
 
 ## Commands
 
@@ -62,6 +62,7 @@ git tag v0.1.x && git push --tags         # triggers .github/workflows/release.y
 - `tauri build --target <triple>` puts output under `target/<triple>/release/...`. `build-dmg.sh` accepts the triple as `$1`; the CI workflow passes `${{ matrix.target }}`.
 - `mktemp -t PREFIX` is rejected by Windows Git Bash when the prefix has no `X`'s. The release scripts use `mktemp -d` (temp directory) instead — keep them consistent if you copy patterns.
 - Don't commit `src-tauri/binaries/*` — gitignored, ~60 MB each, fetched per-host.
+- **Scripts dir**: default is `~/.perfpilot` (`fs::default_scripts_dir`), deliberately *not* `app_data_dir` so the path is identical on macOS and Windows and users can actually find it. A user override lives under the `scripts.dir` key of `perf-pilot.settings.json`; Rust only *reads* that file (`fs::scripts_dir` → `parse_scripts_dir_override`), the frontend owns all writes via the shared handle in `src/lib/settings-store.ts` (one handle matters: the e2e store mock keys state per `load` rid, so two handles would diverge). `ensure_dirs` one-shot-copies `.js` files out of the pre-0.1.4 `<app_data_dir>/scripts` location into a fresh default dir.
 
 ## E2E testing strategy (deliberate tradeoff**: don't change without checking with the user)
 
@@ -76,11 +77,11 @@ When adding IPC commands in Rust, also stub them in `e2e/mock-tauri.ts` — miss
 ## Release pipeline (`.github/workflows/release.yml`)
 
 1. Tag push (`v*`) triggers the `build` matrix. There is deliberately **no `workflow_dispatch`** — day-to-day builds run locally via `npm run tauri:build`; CI is reserved for cutting a release.
-2. Windows x64 job only (macOS arm64 is **temporarily disabled**, see below): cache cargo → fetch k6 sidecar → `tauri build --target <triple>` → NSIS bundler.
-3. Artifacts: `PerfPilot-Windows-x64` (NSIS — 30 MB). `PerfPilot-macOS-arm64` (DMG) is not currently produced.
+2. Two jobs: Windows x64 and macOS arm64 — each caches cargo → fetches the k6 sidecar → `tauri build --target <triple>`; macOS then re-bundles the `.app` with `scripts/build-dmg.sh`, which ad-hoc-signs it before sealing the DMG.
+3. Artifacts: `PerfPilot-Windows-x64` (NSIS — 30 MB) and `PerfPilot-macOS-arm64` (DMG — ad-hoc signed, see below).
 4. `release` job (pinned to `ubuntu-24.04`, only fires on tag push) downloads artifacts and publishes a GitHub Release via `softprops/action-gh-release@v3`. Its `github.event_name == 'push'` guard is now the only thing separating a matrix run from a published release — don't loosen it.
 
-**macOS builds are temporarily disabled** (no Apple Developer account). An unsigned/un-notarized `.dmg` makes Gatekeeper report「应用已损坏」on launch, so the DMG is unusable for distribution — don't "fix" this by re-adding the macOS matrix entry alone. Restoring it requires uncommenting **both** the `macos-latest` matrix entry **and** the `Download macOS DMG` step + `artifacts/macos/*.dmg` glob in the `release` job; restoring only the first makes the publish job fail on `fail_on_unmatched_files: true`. Local macOS dev builds (`npm run tauri:dev`, `npm run tauri:release-dmg`) are unaffected.
+**macOS DMGs are ad-hoc signed** (`codesign --force --deep --sign -` in `build-dmg.sh`, run on the staged copy before the DMG is sealed) because there's no Apple Developer account. Gatekeeper then shows「无法验证开发者 / 身份不明的开发者」on first launch and users open the app via right-click → 打开 — this is the best outcome available without a Developer ID (notarization requires one). The「应用已损坏」error only appears when the bundle signature is missing or broken, so the seal must cover **all** nested code — `--deep` re-signs the k6 sidecar too; signing only the outer bundle leaves a broken seal. When a Developer ID arrives, swap the identity into `build-dmg.sh`'s codesign call and add a notarization step.
 
 ## Things to read before editing
 
