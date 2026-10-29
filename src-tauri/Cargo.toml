@@ -1,6 +1,6 @@
 [package]
 name = "perf-pilot"
-version = "0.1.4"
+version = "0.1.5"
 description = "PerfPilot - AI-Native Performance Testing Platform"
 authors = ["PerfPilot"]
 license = "MIT"
