@@ -24,7 +24,7 @@ const routes: { path: string; label: string }[] = [
   { path: "/ai", label: "AI Generate" },
   { path: "/runs", label: "Live Runs" },
   { path: "/history", label: "History" },
-  { path: "/settings", label: "LLM Settings" },
+  { path: "/settings", label: "Settings" },
 ];
 
 const SEVERITIES_THAT_FAIL = ["serious", "critical"] as const;

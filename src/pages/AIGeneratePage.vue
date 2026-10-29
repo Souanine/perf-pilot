@@ -30,6 +30,7 @@ import Label from "@/components/ui/Label.vue";
 import Badge from "@/components/ui/Badge.vue";
 import Select from "@/components/ui/Select.vue";
 import { useLLMStore } from "@/stores/llm";
+import { useCredentialsStore } from "@/stores/credentials";
 import { useScriptsStore } from "@/stores/scripts";
 import { useUiStore } from "@/stores/ui";
 import { useToastStore } from "@/stores/toast";
@@ -41,6 +42,7 @@ import {
 } from "@/composables/useLlmStream";
 
 const llm = useLLMStore();
+const credentials = useCredentialsStore();
 const scripts = useScriptsStore();
 const ui = useUiStore();
 const app = useAppStore();
@@ -153,6 +155,9 @@ async function generate() {
         prompt: prompt.value,
         hint: hint.value,
         base_url: baseUrl.value || undefined,
+        // Metadata only (names + env vars, no values) so the generated
+        // script reads the exact __ENV keys the runtime injects.
+        credentials: credentials.briefs,
       },
       history.value.slice(0, -1),
     );
@@ -210,7 +215,12 @@ async function refine() {
     const r = await api.generateScriptStream(
       requestId,
       activeProvider.value,
-      { prompt: refinement.value, hint: "", base_url: baseUrl.value || undefined },
+      {
+        prompt: refinement.value,
+        hint: "",
+        base_url: baseUrl.value || undefined,
+        credentials: credentials.briefs,
+      },
       history.value.slice(0, -1),
     );
     history.value.push({ role: "assistant", content: r.script });

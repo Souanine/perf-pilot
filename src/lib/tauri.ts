@@ -68,6 +68,9 @@ export interface RunOptions {
   env?: Record<string, string>;
   cli_args?: string[];
   max_duration_seconds?: number;
+  /** Credential ids whose secret values Rust injects into the k6 process
+   *  env at spawn time. Ids only — values never cross the IPC bridge. */
+  credentials?: string[];
 }
 
 export type RunEvent =
@@ -115,10 +118,35 @@ export interface LlmProviderConfig {
   models: LlmModelSpec[];
 }
 
+export type CredentialMode =
+  | "token"
+  | "basic"
+  | "apikey"
+  | "oauth2_client"
+  | "oauth2_refresh";
+
+/** Metadata-only view of a credential sent to the LLM with each script
+ *  generation request — env var names and pool sizes, never values. */
+export interface CredentialBrief {
+  name: string;
+  mode: CredentialMode;
+  envKey: string;
+  userEnvKey?: string | null;
+  passEnvKey?: string | null;
+  headerName?: string | null;
+  location?: string | null;
+  tokenUrl?: string | null;
+  scope?: string | null;
+  valueCount: number;
+}
+
 export interface ScriptGenRequest {
   prompt: string;
   hint?: string;
   base_url?: string;
+  /** Configured credentials (metadata only) so generated scripts read the
+   *  exact `__ENV` names the runtime will inject. */
+  credentials?: CredentialBrief[];
 }
 
 export interface ScriptGenResponse {
@@ -245,6 +273,19 @@ export const api = {
   /** Remove a provider's key. Succeeds when no key was stored. */
   secretDelete: (providerId: string) =>
     invoke<void>("secret_delete", { providerId }),
+
+  // --- Credential vault ---------------------------------------------------
+  // Load-test auth values (tokens, passwords, OAuth client secrets) live in
+  // the OS credential store under `cred:<id>:<index>` — one entry per pool
+  // value. There is deliberately no get command: values are write-only from
+  // the frontend and only read back inside Rust at k6 spawn time. See
+  // src-tauri/src/credentials.rs.
+
+  /** Overwrite the whole secret pool for a credential. */
+  credentialSetValues: (id: string, values: string[]) =>
+    invoke<void>("credential_set_values", { id, values }),
+  /** Remove every keychain entry of a credential. No-op when absent. */
+  credentialDelete: (id: string) => invoke<void>("credential_delete", { id }),
 };
 
 // Events

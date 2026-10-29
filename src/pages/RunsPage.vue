@@ -25,6 +25,7 @@ import ScrollArea from "@/components/ui/ScrollArea.vue";
 import LiveOutputPane from "@/components/LiveOutputPane.vue";
 import { useScriptsStore } from "@/stores/scripts";
 import { useRunsStore, type LiveRun } from "@/stores/runs";
+import { useCredentialsStore } from "@/stores/credentials";
 import { useAppStore } from "@/stores/app";
 import { useToastStore } from "@/stores/toast";
 import { formatDuration } from "@/lib/utils";
@@ -32,6 +33,7 @@ import { parseEnvLines, shellSplit } from "@/lib/shellSplit";
 
 const scripts = useScriptsStore();
 const runs = useRunsStore();
+const creds = useCredentialsStore();
 const app = useAppStore();
 const toast = useToastStore();
 const route = useRoute();
@@ -76,6 +78,13 @@ function parseCli(): string[] {
   return shellSplit(cliArgs.value);
 }
 
+/** Which env vars a credential will inject — display only. */
+function credEnv(m: { mode: string; envKey: string; userEnvKey?: string; passEnvKey?: string }): string {
+  if (m.mode === "basic") return `${m.userEnvKey ?? "AUTH_USER"}/${m.passEnvKey ?? "AUTH_PASS"}`;
+  if (m.mode.startsWith("oauth2")) return `${m.envKey}_*`;
+  return m.envKey;
+}
+
 async function startRun() {
   if (!scriptPath.value) {
     toast.push({ title: t('runs.pickScriptFirst'), variant: "warning" });
@@ -94,6 +103,9 @@ async function startRun() {
       label: label.value || undefined,
       env: parseEnv(),
       cli_args: parseCli(),
+      // Rust resolves these ids to keychain values at spawn time; the
+      // values themselves never appear in this payload.
+      credentials: creds.lastSelected.length ? [...creds.lastSelected] : undefined,
     });
     selectedRunId.value = id;
     toast.push({
@@ -191,6 +203,7 @@ watch(
 
 onMounted(async () => {
   await scripts.refresh();
+  await creds.ensureHydrated();
 });
 </script>
 
@@ -219,6 +232,25 @@ onMounted(async () => {
           <div>
             <Label class="mb-1 block text-xs">{{ t('runs.labelLabel') }}</Label>
             <Input v-model="label" placeholder="e.g. checkout-smoke" />
+          </div>
+          <div v-if="creds.items.length">
+            <Label class="mb-1 block text-xs">{{ t('runs.credentialsLabel') }}</Label>
+            <div class="max-h-36 space-y-1 overflow-y-auto rounded-md border border-input bg-background p-2">
+              <label
+                v-for="c in creds.items"
+                :key="c.id"
+                class="flex cursor-pointer items-center gap-2 text-xs"
+                :data-testid="`run-cred-${c.id}`"
+              >
+                <input
+                  type="checkbox"
+                  :checked="creds.isSelected(c.id)"
+                  @change="creds.toggleSelected(c.id)"
+                />
+                <span class="min-w-0 flex-1 truncate">{{ c.name }}</span>
+                <code class="shrink-0 text-[10px] text-muted-foreground">{{ credEnv(c) }}</code>
+              </label>
+            </div>
           </div>
           <div>
             <Label class="mb-1 block text-xs">{{ t('runs.envLabel') }}</Label>

@@ -110,7 +110,7 @@ export const useReportsStore = defineStore("reports", () => {
     const llm = useLLMStore();
     const locale = useLocaleStore();
     if (!llm.active?.model) {
-      lastError.value[runId] = "No active LLM model — configure one in LLM Settings.";
+      lastError.value[runId] = "No active LLM model — configure one in Settings.";
       return null;
     }
     generating.value[runId] = true;

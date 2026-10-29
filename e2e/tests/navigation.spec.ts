@@ -19,12 +19,13 @@ test.describe("navigation", () => {
       );
     });
 
-    // Sidebar nav renders the five routes in expected order.
+    // Sidebar nav renders the seven routes in expected order.
     const navLabels = await page.locator("aside nav button").allInnerTexts();
-    expect(navLabels.length).toBe(6); // Dashboard, Editor, AI, Runs, History, Settings
+    expect(navLabels.length).toBe(7); // Dashboard, Editor, AI, Runs, Credentials, History, Settings
     expect(navLabels[0]).toMatch(/Dashboard/);
     expect(navLabels[1]).toMatch(/Script Editor|Editor/);
-    expect(navLabels[5]).toMatch(/Settings|LLM/);
+    expect(navLabels[4]).toMatch(/Credentials|凭据管理/);
+    expect(navLabels[6]).toMatch(/Settings|LLM/);
   });
 
   test("clicking a nav item navigates without a full page reload", async ({ page }) => {
@@ -56,9 +57,9 @@ test.describe("navigation", () => {
 
     // With the labels hidden, identify nav buttons by position in the
     // nav instead of name. The order matches `navItems` in AppLayout:
-    // 0 Dashboard, 1 Editor, 2 AI, 3 Runs, 4 History, 5 Settings.
-    // (4 = History)
-    await page.locator("aside nav button").nth(4).click();
+    // 0 Dashboard, 1 Editor, 2 AI, 3 Runs, 4 Credentials, 5 History, 6 Settings.
+    // (5 = History)
+    await page.locator("aside nav button").nth(5).click();
     await page.waitForFunction(() => window.location.hash.startsWith("#/history"), undefined, {
       timeout: 5_000,
     });

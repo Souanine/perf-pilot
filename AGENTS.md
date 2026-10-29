@@ -31,7 +31,7 @@ npm run dev                               # Vite dev server (frontend only)
 npm run tauri:dev                         # full desktop app
 npm run typecheck                         # vue-tsc --noEmit
 
-# Tests (current counts: 51 cargo, 159 Vitest, 9 Playwright specs)
+# Tests (current counts: 81 cargo, 184 Vitest, 11 Playwright specs)
 npm run test                              # Vitest (jsdom)
 cd src-tauri && cargo test --lib          # Rust unit tests
 npx playwright install chromium          # one-time, before first e2e
@@ -88,6 +88,7 @@ When adding IPC commands in Rust, also stub them in `e2e/mock-tauri.ts` — miss
 - `src-tauri/src/k6.rs` — k6 runner, metric parser, sidecar resolution. Touching this affects every test run.
 - `src-tauri/src/lib.rs` — Tauri command surface (`run_k6`, `generate_script_stream`, etc.). Each new command needs `e2e/mock-tauri.ts` stub.
 - `src-tauri/src/secrets.rs` — OS credential store for LLM API keys (`secret_get`/`secret_set`/`secret_delete`).
+- `src-tauri/src/credentials.rs` — load-test credential vault (pools in keychain, `resolve_for_run` env injection at k6 spawn).
 - `.github/workflows/release.yml` — adding a new platform? Add a `matrix.include` entry + map it in `scripts/fetch-k6.sh`.
 
 ## Conventions
@@ -127,6 +128,33 @@ Gotchas:
 - The key still crosses IPC in plaintext on `test_llm` / `generate_script`. This
   closes the *at-rest* exposure only; keeping keys out of renderer memory would
   mean moving provider lookup into Rust.
+
+## Load-test credentials vault (`credentials.rs`)
+
+Auth values for load-test targets (token / basic / apikey / oauth2_client / oauth2_refresh)
+are managed on the Credentials page and injected into the k6 process env at spawn
+time. Split storage: secret values live in the OS credential store under
+`cred:<id>:<index>` (one entry per pool value — sidesteps Windows CredMan's ~2.5 KB
+per-entry cap); non-secret metadata (name, mode, env var names, usernames, token
+URL) lives in `credentials.list` of the settings JSON, frontend-owned like
+`scripts.dir` (Rust reads it in `resolve_for_run`).
+
+Gotchas:
+
+- **There is deliberately no get command.** Values are write-only from the
+  frontend; the only read path is `resolve_for_run` inside `k6::prepare_run`,
+  which merges them into `Command::envs()` — never argv (so they stay out of
+  the `RunEvent::Started` command echo and persisted RunOutput), never IPC.
+  `RunOptions.credentials` carries ids only; editing a credential means
+  re-entering its values (blank = keep the stored pool).
+- Modes and their env-var shapes are documented on `CredentialMeta` in
+  `credentials.rs`; the frontend mirror is `CredentialMeta` in
+  `src/stores/credentials.ts` and the e2e stand-in is the `credValues` map in
+  `e2e/mock-tauri.ts` — change all three together.
+- The LLM sees `CredentialBrief` metadata (names + pool sizes, no values) via
+  `ScriptGenRequest.credentials`; `system_prompt()` rules 9–12 teach the
+  `__ENV` read / setup()-exchange / pool-rotation patterns. A selected
+  credential with an empty pool aborts the run instead of running unauthenticated.
 
 ## Known issues / non-obvious choices
 

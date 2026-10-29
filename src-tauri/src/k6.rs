@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::process::Stdio;
 use std::sync::{Arc, LazyLock, Mutex as StdMutex};
-use tauri::Emitter;
+use tauri::{Emitter, Manager};
 use tokio::io::{AsyncBufReadExt, BufReader};
 use tokio::process::{Child, Command};
 use tokio::sync::oneshot;
@@ -31,6 +31,10 @@ pub struct RunOptions {
     /// Duration cap in seconds (0 = no cap, pass-through).
     #[serde(default)]
     pub max_duration_seconds: u64,
+    /// Credential ids whose secret values get injected into the k6 process
+    /// env at spawn time. Ids only — values never cross the IPC bridge.
+    #[serde(default)]
+    pub credentials: Vec<String>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -177,7 +181,28 @@ impl K6Runner {
         let k6_version = read_k6_version(&k6_path).unwrap_or_else(|_| "unknown".to_string());
 
         let args = build_k6_args(&script_path, &options);
-        let env = merge_env(&options);
+        let mut env = merge_env(&options);
+        // Resolve credential secret values in-process so they never travel
+        // through IPC or argv. A missing or empty pool aborts the run before
+        // k6 starts — running without auth would only produce misleading
+        // results (a wall of 401s reported as "passed").
+        match crate::credentials::resolve_for_run(window.app_handle(), &options.credentials) {
+            Ok(cred_env) => env.extend(cred_env),
+            Err(e) => {
+                let err = format!("Credential injection failed: {e}");
+                let _ = window.emit(
+                    "k6://event",
+                    RunEvent::Finished {
+                        run_id: run_id.clone(),
+                        finished_at: Utc::now(),
+                        exit_code: None,
+                        status: "errored".to_string(),
+                        error: Some(err.clone()),
+                    },
+                );
+                return Err(err);
+            }
+        }
         // Surface the command we are actually going to exec, not a
         // partial reconstruction of it.
         let mut command_vec: Vec<String> = vec![k6_path.clone()];
@@ -759,6 +784,7 @@ http_reqs...................: 0    100    10/s
             env: HashMap::new(),
             cli_args: vec!["--summary-trend-stats=p(95)".into(), "--quiet".into()],
             max_duration_seconds: 0,
+            credentials: vec![],
         };
         assert_eq!(
             build_k6_args("/app/scripts/smoke.js", &opts),
@@ -778,6 +804,7 @@ http_reqs...................: 0    100    10/s
             env: HashMap::new(),
             cli_args: vec![],
             max_duration_seconds: 0,
+            credentials: vec![],
         };
         assert_eq!(
             build_k6_args("/app/scripts/smoke.js", &opts),
@@ -796,6 +823,7 @@ http_reqs...................: 0    100    10/s
             env: HashMap::new(),
             cli_args: vec!["--vus".into(), "2".into()],
             max_duration_seconds: 0,
+            credentials: vec![],
         };
         let args = build_k6_args("/s.js", &opts);
         assert_eq!(args.first().map(String::as_str), Some("run"));
@@ -813,6 +841,7 @@ http_reqs...................: 0    100    10/s
             env,
             cli_args: vec![],
             max_duration_seconds: 0,
+            credentials: vec![],
         };
         let merged = merge_env(&opts);
         assert_eq!(merged.get("BASE_URL").map(String::as_str), Some("https://api.example.com"));
@@ -827,8 +856,25 @@ http_reqs...................: 0    100    10/s
             env: HashMap::new(),
             cli_args: vec![],
             max_duration_seconds: 0,
+            credentials: vec![],
         };
         assert!(merge_env(&opts).is_empty());
+    }
+
+    /// Older payloads (and the e2e mock) omit `credentials` entirely;
+    /// `serde(default)` must keep them deserializing.
+    #[test]
+    fn run_options_deserialize_without_credentials_field() {
+        let opts: RunOptions =
+            serde_json::from_str(r#"{"label":"x","env":{},"cli_args":[]}"#).unwrap();
+        assert!(opts.credentials.is_empty());
+    }
+
+    #[test]
+    fn run_options_carry_credential_ids() {
+        let opts: RunOptions =
+            serde_json::from_str(r#"{"credentials":["cred-1","cred-2"]}"#).unwrap();
+        assert_eq!(opts.credentials, vec!["cred-1".to_string(), "cred-2".to_string()]);
     }
 
     /// `resolve_sidecar_k6_path` should look next to `current_exe()` for
@@ -1030,6 +1076,7 @@ export default function () {
             env: HashMap::new(),
             cli_args: vec![],
             max_duration_seconds: 0,
+            credentials: vec![],
         }
     }
 

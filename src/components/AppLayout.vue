@@ -10,6 +10,7 @@ import {
   Gauge,
   Globe,
   History,
+  KeyRound,
   ListChecks,
   PanelLeftClose,
   PanelLeftOpen,
@@ -35,6 +36,7 @@ const navItems = [
   { path: "/editor", labelKey: "nav.editor", icon: FileCode2 },
   { path: "/ai", labelKey: "nav.ai", icon: Sparkles },
   { path: "/runs", labelKey: "nav.runs", icon: Activity },
+  { path: "/credentials", labelKey: "nav.credentials", icon: KeyRound },
   { path: "/history", labelKey: "nav.history", icon: History },
   { path: "/settings", labelKey: "nav.settings", icon: Settings },
 ];
@@ -47,6 +49,7 @@ const ROUTE_TITLE_KEY: Record<string, string> = {
   "/editor": "nav.editor",
   "/ai": "nav.ai",
   "/runs": "nav.runs",
+  "/credentials": "nav.credentials",
   "/history": "nav.history",
   "/settings": "nav.settings",
 };

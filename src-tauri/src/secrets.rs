@@ -17,8 +17,9 @@
 use keyring::{Entry, Error as KeyringError};
 
 /// Namespaces our entries inside the shared OS credential store. Keep
-/// in sync with `identifier` in `tauri.conf.json`.
-const SERVICE: &str = "dev.perfpilot.app";
+/// in sync with `identifier` in `tauri.conf.json`. Shared with
+/// `credentials.rs` so both vaults live under one namespace.
+pub(crate) const SERVICE: &str = "dev.perfpilot.app";
 
 fn entry(provider_id: &str) -> Result<Entry, String> {
     Entry::new(SERVICE, provider_id).map_err(|e| format!("keychain entry failed: {e}"))

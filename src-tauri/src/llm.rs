@@ -141,6 +141,11 @@ pub struct ScriptGenRequest {
     /// Target base URL the script should call.
     #[serde(default)]
     pub base_url: Option<String>,
+    /// Metadata of credentials configured in the vault — names and env var
+    /// names only, never values. Lets generated scripts read the exact
+    /// `__ENV` keys the runtime will inject.
+    #[serde(default)]
+    pub credentials: Vec<crate::credentials::CredentialBrief>,
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -190,22 +195,8 @@ pub async fn generate_script(
         content: system_prompt().to_string(),
     }];
 
-    // Optional user hint merged into the prompt.
-    let mut composed = request.prompt.clone();
-    if let Some(hint) = &request.hint {
-        if !hint.trim().is_empty() {
-            composed.push_str("\n\nHints:\n");
-            composed.push_str(hint);
-        }
-    }
-    if let Some(url) = &request.base_url {
-        if !url.trim().is_empty() {
-            composed.push_str(&format!("\n\nTarget base URL: {}", url));
-        }
-    }
-
     messages.push(ChatMessage::User {
-        content: composed,
+        content: compose_script_user_prompt(request),
     });
     for m in history {
         messages.push(m);
@@ -677,7 +668,84 @@ Rules:
 6. Never import external npm packages; k6 only ships with `k6/http`, `k6`, `k6/crypto`, `k6/encoding`, `k6/html`, etc.
 7. When the user mentions a base URL, expose it via `const BASE_URL = __ENV.BASE_URL || '...';`
 8. Default to safe staging defaults: 10 VUs, 30s duration, p95 < 500ms unless the user specifies otherwise.
+9. Auth credentials are managed by the tool and injected into the k6 process as environment variables. NEVER hardcode credentials, tokens, passwords or API keys in the script, and never print secret values.
+10. When the request lists configured credentials, read their values via `__ENV.<NAME>` using exactly the env var names given. If the scenario needs auth but no list is given, still read from `__ENV` and state in the explanation which env var names the user must configure.
+11. Per-mode auth patterns:
+   - token: `headers: { Authorization: \`Bearer ${token}\` }`
+   - apikey: send the value in the credential's header (e.g. `headers: { 'X-API-Key': key }`) or as a query param when its location says query.
+   - basic: `http.auth(user, pass, 'basic')` for HTTP Basic, or POST the pair to a login form.
+   - oauth2_client / oauth2_refresh: exchange for an access token in `setup()` (runs exactly once before all VUs) using the injected env vars, return it, and reuse it in every VU; for long tests refresh lazily as `expires_in` nears.
+12. A credential may hold a pool of values in one env var, newline-separated. Rotate per virtual user: `const TOKENS = (__ENV.AUTH_TOKEN || '').split('\n').filter(Boolean); const token = TOKENS[__VU % TOKENS.length];`
 "#
+}
+
+/// Compose the user message for script generation: prompt + hints + base
+/// URL + the configured-credential list. Shared by the streaming and
+/// non-streaming paths so both stay aligned.
+pub(crate) fn compose_script_user_prompt(request: &ScriptGenRequest) -> String {
+    let mut composed = request.prompt.clone();
+    if let Some(hint) = &request.hint {
+        if !hint.trim().is_empty() {
+            composed.push_str("\n\nHints:\n");
+            composed.push_str(hint);
+        }
+    }
+    if let Some(url) = &request.base_url {
+        if !url.trim().is_empty() {
+            composed.push_str(&format!("\n\nTarget base URL: {}", url));
+        }
+    }
+    if !request.credentials.is_empty() {
+        composed.push_str(
+            "\n\nConfigured credentials (their values are injected at runtime via these env vars; use exactly these names):\n",
+        );
+        for c in &request.credentials {
+            composed.push_str(&credential_brief_line(c));
+            composed.push('\n');
+        }
+    }
+    composed
+}
+
+/// One line describing a credential to the LLM — names and env vars only.
+fn credential_brief_line(c: &crate::credentials::CredentialBrief) -> String {
+    let pool = if c.value_count > 1 {
+        format!(" (pool of {} values, newline-separated in one env var)", c.value_count)
+    } else {
+        String::new()
+    };
+    match c.mode.as_str() {
+        "basic" => format!(
+            "- \"{}\" (basic): usernames in {}, passwords in {}{}",
+            c.name,
+            c.user_env_key.clone().unwrap_or_else(|| "AUTH_USER".into()),
+            c.pass_env_key.clone().unwrap_or_else(|| "AUTH_PASS".into()),
+            pool
+        ),
+        "apikey" => format!(
+            "- \"{}\" (apikey): value in {}, send as {} \"{}\"{}",
+            c.name,
+            c.env_key,
+            c.location.as_deref().unwrap_or("header"),
+            c.header_name.clone().unwrap_or_else(|| "X-API-Key".into()),
+            pool
+        ),
+        "oauth2_client" => {
+            let mut vars = format!("{}_TOKEN_URL, {}_CLIENT_ID, {}_CLIENT_SECRET", c.env_key, c.env_key, c.env_key);
+            if c.scope.as_deref().is_some_and(|s| !s.is_empty()) {
+                vars.push_str(&format!(", {}_SCOPE", c.env_key));
+            }
+            format!(
+                "- \"{}\" (oauth2 client_credentials): exchange for a token in setup() using env vars {}; token URL is {}{}",
+                c.name, vars, c.token_url.clone().unwrap_or_default(), pool
+            )
+        }
+        "oauth2_refresh" => format!(
+            "- \"{}\" (oauth2 refresh_token): exchange for a token in setup() using env vars {}_TOKEN_URL, {}_REFRESH_TOKEN; token URL is {}{}",
+            c.name, c.env_key, c.env_key, c.token_url.clone().unwrap_or_default(), pool
+        ),
+        _ => format!("- \"{}\" ({}): value in env var {}{}", c.name, c.mode, c.env_key, pool),
+    }
 }
 
 /// Extract the script (first fenced JS block) and any explanation (text after it).
@@ -844,6 +912,68 @@ fn sanitize_script(raw: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn system_prompt_covers_credential_rules() {
+        let p = system_prompt();
+        assert!(p.contains("__ENV"), "prompt must teach __ENV credential reads");
+        assert!(p.contains("NEVER hardcode"), "prompt must forbid hardcoded secrets");
+        assert!(p.contains("setup()"), "prompt must teach the oauth2 setup() exchange");
+        assert!(p.contains("__VU %"), "prompt must teach pool rotation");
+    }
+
+    #[test]
+    fn user_prompt_lists_credentials_without_values() {
+        let req = ScriptGenRequest {
+            prompt: "load test the orders API".into(),
+            hint: None,
+            base_url: Some("https://api.example.com".into()),
+            credentials: vec![
+                crate::credentials::CredentialBrief {
+                    name: "Staging token".into(),
+                    mode: "token".into(),
+                    env_key: "AUTH_TOKEN".into(),
+                    user_env_key: None,
+                    pass_env_key: None,
+                    header_name: None,
+                    location: None,
+                    token_url: None,
+                    scope: None,
+                    value_count: 3,
+                },
+                crate::credentials::CredentialBrief {
+                    name: "OAuth app".into(),
+                    mode: "oauth2_client".into(),
+                    env_key: "OAUTH".into(),
+                    user_env_key: None,
+                    pass_env_key: None,
+                    header_name: None,
+                    location: None,
+                    token_url: Some("https://auth.example/token".into()),
+                    scope: Some("orders".into()),
+                    value_count: 1,
+                },
+            ],
+        };
+        let composed = compose_script_user_prompt(&req);
+        assert!(composed.contains("Target base URL: https://api.example.com"));
+        assert!(composed.contains("AUTH_TOKEN"), "env var name must reach the model");
+        assert!(composed.contains("pool of 3"), "pool size must reach the model");
+        assert!(composed.contains("OAUTH_TOKEN_URL"), "oauth2 env var names must reach the model");
+        assert!(composed.contains("https://auth.example/token"), "token URL is non-secret metadata");
+        assert!(composed.contains("OAUTH_SCOPE"));
+    }
+
+    #[test]
+    fn user_prompt_omits_credential_section_when_empty() {
+        let req = ScriptGenRequest {
+            prompt: "plain".into(),
+            hint: None,
+            base_url: None,
+            credentials: vec![],
+        };
+        assert!(!compose_script_user_prompt(&req).contains("Configured credentials"));
+    }
 
     #[test]
     fn extracts_script() {

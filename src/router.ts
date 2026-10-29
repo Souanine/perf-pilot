@@ -27,6 +27,12 @@ const routes: RouteRecordRaw[] = [
     meta: { title: "Runs" },
   },
   {
+    path: "/credentials",
+    name: "credentials",
+    component: () => import("@/pages/CredentialsPage.vue"),
+    meta: { title: "Credentials" },
+  },
+  {
     path: "/history",
     name: "history",
     component: () => import("@/pages/HistoryPage.vue"),
@@ -36,7 +42,7 @@ const routes: RouteRecordRaw[] = [
     path: "/settings",
     name: "settings",
     component: () => import("@/pages/SettingsPage.vue"),
-    meta: { title: "LLM Settings" },
+    meta: { title: "Settings" },
   },
   {
     path: "/:catchAll(.*)",

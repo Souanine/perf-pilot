@@ -546,25 +546,12 @@ pub fn build_script_messages(
     request: &ScriptGenRequest,
     history: Vec<ChatMessage>,
 ) -> (Vec<ChatMessage>, String) {
-    use crate::llm::system_prompt;
+    use crate::llm::{compose_script_user_prompt, system_prompt};
     let mut messages = vec![ChatMessage::System {
         content: system_prompt().to_string(),
     }];
-
-    let mut composed = request.prompt.clone();
-    if let Some(hint) = &request.hint {
-        if !hint.trim().is_empty() {
-            composed.push_str("\n\nHints:\n");
-            composed.push_str(hint);
-        }
-    }
-    if let Some(url) = &request.base_url {
-        if !url.trim().is_empty() {
-            composed.push_str(&format!("\n\nTarget base URL: {}", url));
-        }
-    }
     messages.push(ChatMessage::User {
-        content: composed,
+        content: compose_script_user_prompt(request),
     });
     for m in history {
         messages.push(m);

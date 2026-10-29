@@ -44,8 +44,9 @@ export async function gotoApp(
     "/editor": /Script Editor|Editor/,
     "/ai": /AI Generate/,
     "/runs": /Live Runs|Runs/,
+    "/credentials": /Credentials|凭据管理/,
     "/history": /History/,
-    "/settings": /LLM Settings|Settings/,
+    "/settings": /Settings|设置/,
   };
   const navLabel = navMap[target];
   if (navLabel && target !== "/") {

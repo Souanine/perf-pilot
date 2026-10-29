@@ -175,6 +175,11 @@ export async function installTauriMocks(page: Page, spec: MockSpec = {}) {
     // spec asserting on the settings JSON can't see keys that the real
     // backend keeps out of it.
     const secrets = new Map<string, string>();
+    // Credential vault pools, keyed `cred:<id>:<index>` exactly like
+    // credentials.rs. No get command exists here either — specs assert
+    // through `window.__CRED_STORE__`.
+    const credValues = new Map<string, string>();
+    (window as any).__CRED_STORE__ = credValues;
     // plugin-event protocol: listen/emit route through invoke.
     const eventHandlers = new Map(); // event -> Map<handlerId, callback>
     let nextHandlerId = 1;
@@ -314,6 +319,24 @@ export async function installTauriMocks(page: Page, spec: MockSpec = {}) {
         case "secret_delete":
           secrets.delete(args.providerId);
           return null;
+        // Credential vault — mirrors credentials.rs pool semantics: one
+        // entry per value, stale tail entries dropped on shrink.
+        case "credential_set_values": {
+          const vals = Array.isArray(args.values) ? args.values : [];
+          for (let i = 0; i < vals.length; i++) {
+            credValues.set("cred:" + args.id + ":" + i, vals[i]);
+          }
+          for (let i = vals.length; i < 4096; i++) {
+            if (!credValues.delete("cred:" + args.id + ":" + i)) break;
+          }
+          return null;
+        }
+        case "credential_delete": {
+          for (let i = 0; i < 4096; i++) {
+            if (!credValues.delete("cred:" + args.id + ":" + i)) break;
+          }
+          return null;
+        }
         // plugin-store protocol
         case "plugin:store|load": {
           const rid = nextRid++;

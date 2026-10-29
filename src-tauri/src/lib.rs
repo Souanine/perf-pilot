@@ -3,6 +3,7 @@ use std::sync::Arc;
 use tauri::{Manager, State};
 use tokio::sync::Mutex;
 
+pub mod credentials;
 pub mod fs;
 pub mod k6;
 pub mod llm;
@@ -10,6 +11,7 @@ pub mod llm_stream;
 pub mod secrets;
 pub mod settings;
 
+use credentials::{credential_delete, credential_set_values};
 use secrets::{secret_delete, secret_get, secret_set};
 
 use k6::{K6Info, K6Runner, RunOptions, RunOutput};
@@ -291,6 +293,8 @@ pub fn run() {
             secret_get,
             secret_set,
             secret_delete,
+            credential_set_values,
+            credential_delete,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

@@ -6,7 +6,7 @@ import { getSettingsStore as getStore } from "@/lib/settings-store";
 const KEY_PROVIDERS = "llm.providers";
 const KEY_ACTIVE = "llm.active";
 
-/** Settings writes coalesce — typing in the LLM Settings form fires one
+/** Settings writes coalesce — typing in the Settings form fires one
  *  mutation per keystroke, and `watch(providers, …)` would otherwise
  *  rewrite the whole JSON file on every change. */
 const PERSIST_DEBOUNCE_MS = 300;
