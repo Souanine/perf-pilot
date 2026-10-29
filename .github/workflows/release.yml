@@ -14,15 +14,16 @@
 # Output artifacts (per platform, uploaded separately so they can be
 # downloaded independently):
 #   Windows → PerfPilot-Windows-x64   (NSIS Setup.exe)
-#   macOS   → PerfPilot-macOS-arm64   (.dmg) — DISABLED, see below.
+#   macOS   → PerfPilot-macOS-arm64   (.dmg, ad-hoc signed)
 #
-# TEMPORARY: macOS builds are disabled because there is no Apple
-# Developer account yet. An unsigned, un-notarized .dmg trips Gatekeeper
-# and users see「应用已损坏」instead of the app — unusable for
-# distribution. Re-enable by uncommenting the macOS matrix entry AND the
-# two `macOS` blocks in the `release` job (see markers below); they must
-# be restored together or `fail_on_unmatched_files` breaks the publish.
-# Windows needs no code signing to install, so it ships fine as-is.
+# macOS has no Apple Developer account, so the .dmg is ad-hoc signed
+# (`codesign --sign -`, done inside scripts/build-dmg.sh before the DMG
+# is sealed). Gatekeeper can't verify the developer, so first launch
+# shows「无法验证开发者 / 身份不明的开发者」— users open it via
+# right-click → 打开. This is deliberately NOT the「应用已损坏」case:
+# that only appears when the bundle signature is missing or broken,
+# which the ad-hoc seal prevents. Windows needs no code signing to
+# install, so it ships fine as-is.
 #
 # Notes:
 #   - `bundle.targets: "all"` in tauri.conf.json is resolved by Tauri's
@@ -30,8 +31,9 @@
 #     platform-appropriate bundlers (DMG on macOS, NSIS on Windows).
 #   - The k6 sidecar binary is fetched per host via `scripts/fetch-k6.sh`
 #     — it maps rustc's target triple to the matching GitHub release asset.
-#   - No code signing yet. macOS notarization and Windows Authenticode
-#     signing can be layered on later without changing this matrix.
+#   - No Developer ID yet. Notarization and Windows Authenticode signing
+#     can be layered on later without changing this matrix; once a real
+#     signing identity exists, swap it into build-dmg.sh's codesign call.
 
 name: Release
 
@@ -50,12 +52,12 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          # TEMPORARY: re-enable when an Apple Developer account exists
-          # (needs signing + notarization for Gatekeeper to accept it).
-          # - platform: macos-latest
-          #   target: aarch64-apple-darwin
-          #   label: macOS (Apple Silicon)
-          #   artifact: PerfPilot-macOS-arm64
+          # Ad-hoc signed (see build-dmg.sh) — no Developer ID, so users
+          # must right-click → 打开 past Gatekeeper the first time.
+          - platform: macos-latest
+            target: aarch64-apple-darwin
+            label: macOS (Apple Silicon)
+            artifact: PerfPilot-macOS-arm64
           - platform: windows-latest
             target: x86_64-pc-windows-msvc
             label: Windows (x64)
@@ -149,12 +151,11 @@ jobs:
     permissions:
       contents: write
     steps:
-      # TEMPORARY: keep commented in lockstep with the macOS matrix entry.
-      # - name: Download macOS DMG
-      #   uses: actions/download-artifact@v8
-      #   with:
-      #     name: PerfPilot-macOS-arm64
-      #     path: artifacts/macos
+      - name: Download macOS DMG
+        uses: actions/download-artifact@v8
+        with:
+          name: PerfPilot-macOS-arm64
+          path: artifacts/macos
 
       - name: Download Windows installer
         uses: actions/download-artifact@v8
@@ -182,11 +183,14 @@ jobs:
 
             | 平台 | 文件 |
             | --- | --- |
+            | macOS (Apple Silicon) | `PerfPilot-${{ steps.ver.outputs.version }}-arm64.dmg` |
             | Windows x64 | `PerfPilot_${{ steps.ver.outputs.version }}_x64-setup.exe` |
 
             k6 已随应用打包，无需单独安装。
 
-            macOS 版本暂未提供：没有 Apple Developer 账号就无法完成签名与公证，
-            未签名的 .dmg 会被 Gatekeeper 判定为「应用已损坏」，因此暂不分发。
+            macOS 版本使用 ad-hoc 签名（暂无 Apple Developer 账号，无法公证）。
+            首次打开时 Gatekeeper 会提示「无法验证开发者」，右键点击应用 →「打开」
+            即可正常运行。
           files: |
+            artifacts/macos/*.dmg
             artifacts/windows/*.exe

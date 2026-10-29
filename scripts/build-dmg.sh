@@ -40,6 +40,17 @@ trap 'rm -rf "$STAGING_DIR"' EXIT
 # ditto preserves Mac metadata + symlinks better than cp -R.
 ditto "$APP_SRC" "$STAGING/PerfPilot.app"
 
+# Ad-hoc sign (codesign identity "-") the staged bundle before sealing the
+# DMG. Without a valid bundle signature, a quarantined download reports
+# 「应用已损坏」; with ad-hoc signing Gatekeeper instead shows「无法验证开发者 /
+# 身份不明的开发者」and right-click → 打开 still works. --deep re-signs nested
+# code (the k6 sidecar included) — the signature must cover everything, or
+# the seal fails and we're back to "damaged". No Developer ID means no
+# notarization, so this is the best Gatekeeper outcome available.
+echo "→ ad-hoc codesign"
+codesign --force --deep --sign - "$STAGING/PerfPilot.app"
+codesign --verify --deep --strict --verbose=2 "$STAGING/PerfPilot.app"
+
 # create-dmg creates the Applications drop-link itself via
 # --app-drop-link; hdiutil has no such option and needs us to seed the
 # symlink. So we only build the symlink on the fallback path.
