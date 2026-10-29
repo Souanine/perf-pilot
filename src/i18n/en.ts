@@ -277,6 +277,13 @@ export default {
     modelPick: "Use this model",
     expand: "Expand",
     collapse: "Collapse",
+    scriptsDirTitle: "Scripts directory",
+    scriptsDirDesc:
+      "Where k6 scripts are stored. Defaults to ~/.perfpilot in your home directory on every platform.",
+    scriptsDirBrowse: "Choose…",
+    scriptsDirReset: "Reset to default",
+    scriptsDirUpdated: "Scripts directory updated",
+    scriptsDirError: "Could not use that directory",
   },
   report: {
     title: "Performance Report",

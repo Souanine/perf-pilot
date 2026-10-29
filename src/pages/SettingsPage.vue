@@ -12,7 +12,9 @@ import {
   ChevronRight,
   X,
   GripVertical,
+  FolderOpen,
 } from "@lucide/vue";
+import { open as openDialog } from "@tauri-apps/plugin-dialog";
 import Card from "@/components/ui/Card.vue";
 import CardContent from "@/components/ui/CardContent.vue";
 import CardHeader from "@/components/ui/CardHeader.vue";
@@ -24,12 +26,60 @@ import Label from "@/components/ui/Label.vue";
 import Select from "@/components/ui/Select.vue";
 import Badge from "@/components/ui/Badge.vue";
 import { useLLMStore } from "@/stores/llm";
+import { useAppStore } from "@/stores/app";
+import { useScriptsStore } from "@/stores/scripts";
 import { useToastStore } from "@/stores/toast";
 import { api, type ApiFormat, type LlmProviderConfig } from "@/lib/tauri";
+import { getSettingsStore, KEY_SCRIPTS_DIR } from "@/lib/settings-store";
 
 const llm = useLLMStore();
+const app = useAppStore();
+const scripts = useScriptsStore();
 const toast = useToastStore();
 const { t } = useI18n();
+
+/** Persist a scripts-dir override (or clear it with `null`), then make
+ *  the backend create the directory. On failure the key is rolled back
+ *  so a bad path never persists into the settings file. */
+async function applyScriptsDir(dir: string | null) {
+  const s = await getSettingsStore();
+  if (dir) {
+    await s.set(KEY_SCRIPTS_DIR, dir);
+  } else {
+    await s.delete(KEY_SCRIPTS_DIR);
+  }
+  await s.save();
+  try {
+    await api.ensureDirs();
+  } catch (e: unknown) {
+    if (dir) {
+      await s.delete(KEY_SCRIPTS_DIR);
+      await s.save();
+    }
+    toast.push({
+      title: t('settings.scriptsDirError'),
+      description: e instanceof Error ? e.message : String(e),
+      variant: "destructive",
+    });
+    return;
+  }
+  await app.load();
+  await scripts.refresh();
+  toast.push({
+    title: t('settings.scriptsDirUpdated'),
+    description: dir ?? app.info?.scripts_dir,
+    variant: "success",
+  });
+}
+
+async function pickScriptsDir() {
+  const dir = await openDialog({
+    directory: true,
+    defaultPath: app.info?.scripts_dir,
+  });
+  if (typeof dir !== "string") return;
+  await applyScriptsDir(dir);
+}
 
 interface FormatOption {
   value: ApiFormat;
@@ -470,6 +520,27 @@ onMounted(async () => {
             <AlertTriangle class="mr-1 inline h-3 w-3" />
             {{ t('settings.secretStoreError') }}
             <code class="font-mono">{{ llm.secretStoreError }}</code>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>{{ t('settings.scriptsDirTitle') }}</CardTitle>
+          <CardDescription>{{ t('settings.scriptsDirDesc') }}</CardDescription>
+        </CardHeader>
+        <CardContent>
+          <div class="flex items-center gap-2">
+            <code
+              class="min-w-0 flex-1 truncate rounded bg-muted px-2 py-1.5 text-xs"
+              :title="app.info?.scripts_dir"
+            >{{ app.info?.scripts_dir || "—" }}</code>
+            <Button size="sm" variant="outline" @click="pickScriptsDir">
+              <FolderOpen class="h-3 w-3" /> {{ t('settings.scriptsDirBrowse') }}
+            </Button>
+            <Button size="sm" variant="ghost" @click="applyScriptsDir(null)">
+              {{ t('settings.scriptsDirReset') }}
+            </Button>
           </div>
         </CardContent>
       </Card>

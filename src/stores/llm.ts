@@ -1,9 +1,8 @@
 import { defineStore } from "pinia";
 import { computed, ref, watch } from "vue";
 import { api, type LlmProviderConfig, type LlmModelSpec, type ApiFormat, type LlmTestResult } from "@/lib/tauri";
-import { load as loadStore, type Store } from "@tauri-apps/plugin-store";
+import { getSettingsStore as getStore } from "@/lib/settings-store";
 
-const STORE_FILE = "perf-pilot.settings.json";
 const KEY_PROVIDERS = "llm.providers";
 const KEY_ACTIVE = "llm.active";
 
@@ -11,14 +10,6 @@ const KEY_ACTIVE = "llm.active";
  *  mutation per keystroke, and `watch(providers, …)` would otherwise
  *  rewrite the whole JSON file on every change. */
 const PERSIST_DEBOUNCE_MS = 300;
-
-let storeHandle: Store | null = null;
-async function getStore(): Promise<Store> {
-  if (!storeHandle) {
-    storeHandle = await loadStore(STORE_FILE, { autoSave: true });
-  }
-  return storeHandle;
-}
 
 /** Provider id → key currently held in the OS credential store. Lets
  *  `syncSecrets` skip writes when a key hasn't changed — the Settings

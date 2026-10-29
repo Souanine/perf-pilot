@@ -269,6 +269,12 @@ export default {
     modelPick: "使用此模型",
     expand: "展开",
     collapse: "折叠",
+    scriptsDirTitle: "脚本目录",
+    scriptsDirDesc: "k6 脚本的存放位置，默认为各平台用户主目录下的 ~/.perfpilot。",
+    scriptsDirBrowse: "选择…",
+    scriptsDirReset: "恢复默认",
+    scriptsDirUpdated: "脚本目录已更新",
+    scriptsDirError: "无法使用该目录",
   },
   report: {
     title: "性能报告",
