@@ -13,7 +13,60 @@ PerfPilot turns natural-language intents into runnable k6 load-test scripts, let
 - 🧠 **Pluggable LLMs** — OpenAI-compatible, Anthropic, Ollama, or any custom OpenAI-compatible endpoint (DeepSeek, Moonshot, OpenRouter, etc.).
 - 🖥️ **Monaco Editor** — IntelliSense-ish k6 JavaScript editing, themes, multi-tab.
 - 📊 **Live metrics** — captures k6 summary metrics and renders them in-app.
+- 🔐 **Credentials vault** — tokens, basic accounts, API keys, and OAuth2 secrets live in the OS keychain and are injected into k6 as environment variables per run; the AI only ever sees variable names.
 - 💾 **Local-first** — scripts, runs, and configs persisted via the Tauri store plugin.
+
+## Usage
+
+### 1. Configure an LLM (Settings)
+
+Open **Settings**, add a provider (OpenAI-compatible, Anthropic, or Ollama), pick a model, and set it active. API keys are stored in your OS credential store (macOS Keychain / Windows Credential Manager / Linux Secret Service) — never in the settings file.
+
+### 2. Load test without authentication
+
+1. **AI Generate** — describe the scenario in plain language (e.g. *"smoke test `GET /health` with 20 VUs for 30s, fail if p95 > 400ms"*) and generate a complete k6 script with checks and thresholds.
+2. Save the script (default scripts dir: `~/.perfpilot`, configurable in Settings).
+3. **Live Runs** — pick the script, optionally add env vars / CLI args, and start. stdout/stderr and summary metrics stream into the app.
+
+You can also skip AI entirely and write scripts directly in the Monaco editor.
+
+### 3. Load test with authentication
+
+Instead of pasting secrets into prompts or scripts, register them once under **Credentials**; PerfPilot injects them into the k6 process environment at run time.
+
+| Mode | Injected env vars | Typical use |
+| --- | --- | --- |
+| Bearer Token | `AUTH_TOKEN` | static API tokens / session JWTs |
+| Basic | `AUTH_USER` + `AUTH_PASS` | HTTP basic auth |
+| API Key | `API_KEY` (header name kept as metadata) | `X-API-Key`-style keys |
+| OAuth2 client credentials | `OAUTH_TOKEN_URL` / `OAUTH_CLIENT_ID` / `OAUTH_CLIENT_SECRET` (+ `OAUTH_SCOPE`) | machine-to-machine OAuth2 |
+| OAuth2 refresh token | `OAUTH_TOKEN_URL` / `OAUTH_REFRESH_TOKEN` (+ client id/secret) | long-running tests refreshing a token |
+
+Env var names are editable per credential — give multiple OAuth2 credentials distinct prefixes so they don't overwrite each other.
+
+**Identity pools.** One credential can hold many secret values (one per line). All values are joined into a single env var with `\n`; scripts rotate them per virtual user:
+
+```js
+const TOKENS = (__ENV.AUTH_TOKEN || "").split("\n").filter(Boolean);
+const token = TOKENS[__VU % TOKENS.length];
+```
+
+**Bulk import.** The Import dialog accepts pasted or file-based `.env`, JSON, and CSV content.
+
+**AI + credentials.** The credential list — names, modes, env var names, pool sizes, *never the values* — is attached to every generation request. Just mention auth in plain language ("authenticate each VU with the E2E OAuth2 credential") and the generated script reads the matching `__ENV` variables. The standard OAuth2 pattern exchanges the token once in `setup()`:
+
+```js
+export function setup() {
+  const res = http.post(
+    __ENV.OAUTH_TOKEN_URL,
+    `grant_type=client_credentials&client_id=${__ENV.OAUTH_CLIENT_ID}&client_secret=${__ENV.OAUTH_CLIENT_SECRET}`,
+    { headers: { "Content-Type": "application/x-www-form-urlencoded" } },
+  );
+  return { token: res.json("access_token") };
+}
+```
+
+**Running with credentials.** On the **Live Runs** page, tick the credentials a run needs (the last selection is remembered) and start. Secret values are injected as environment variables into the k6 process only — they never appear in the command line, persisted run records, or the UI, and the LLM only ever sees variable names.
 
 ## Stack
 
@@ -35,6 +88,7 @@ perf-pilot/
 ├── src-tauri/                 # Rust backend
 │   └── src/
 │       ├── k6.rs              # k6 runner + sidecar resolution
+│       ├── credentials.rs     # credential vault (OS keychain) + env injection
 │       ├── llm.rs             # LLM provider clients
 │       ├── llm_stream.rs      # SSE stream parser
 │       ├── fs.rs              # script / run-record IO
@@ -49,8 +103,8 @@ Grab the latest installers from the [Releases](https://github.com/Souanine/perf-
 
 | Platform | File |
 | --- | --- |
-| macOS Apple Silicon | `PerfPilot-0.1.0-arm64.dmg` |
-| Windows x64 | `PerfPilot_0.1.0_x64-setup.exe` |
+| macOS Apple Silicon | `PerfPilot-0.1.5-arm64.dmg` |
+| Windows x64 | `PerfPilot_0.1.5_x64-setup.exe` |
 
 ## Quick start (development)
 

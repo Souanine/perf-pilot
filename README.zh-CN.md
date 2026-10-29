@@ -13,7 +13,60 @@ PerfPilot 把自然语言描述的测试场景转换成可直接运行的 k6 脚
 - 🧠 **可插拔 LLM** —— OpenAI 兼容、Anthropic、Ollama，或任何自定义 OpenAI 兼容端点（DeepSeek、Moonshot、OpenRouter 等）。
 - 🖥️ **Monaco 编辑器** —— 类 IntelliSense 的 k6 JavaScript 编辑、主题、多 Tab。
 - 📊 **实时指标** —— 抓取 k6 summary 指标并在 app 内渲染。
+- 🔐 **凭据库** —— token、账号密码、API Key、OAuth2 秘密值保存在系统凭据库，运行时按次注入 k6 环境变量；AI 只能看到变量名，永远看不到值。
 - 💾 **本地优先** —— 脚本、运行记录、配置都通过 Tauri store plugin 持久化。
+
+## 用法
+
+### 1. 配置 LLM（设置）
+
+打开**设置**，添加 provider（OpenAI 兼容、Anthropic 或 Ollama），选择模型并激活。API key 存放在系统凭据库（macOS 钥匙串 / Windows 凭据管理器 / Linux Secret Service），不会写入配置文件。
+
+### 2. 不含认证的压测
+
+1. **AI 生成** —— 用自然语言描述场景（例如 *"对 `GET /health` 做冒烟测试，20 VU 跑 30 秒，p95 超过 400ms 判失败"*），一键生成带 check 和 threshold 的完整 k6 脚本。
+2. 保存脚本（默认脚本目录 `~/.perfpilot`，可在设置中修改）。
+3. **实时运行** —— 选择脚本，可选填环境变量 / CLI 参数，开始运行。stdout/stderr 与汇总指标实时回流到 app。
+
+也可以完全不用 AI，直接在 Monaco 编辑器里手写脚本。
+
+### 3. 带认证的压测
+
+不用把秘密值贴进 prompt 或脚本——在**凭据管理**里登记一次，PerfPilot 会在运行时注入 k6 进程环境。
+
+| 模式 | 注入的环境变量 | 典型场景 |
+| --- | --- | --- |
+| Bearer Token | `AUTH_TOKEN` | 静态 API token / 会话 JWT |
+| 账号 + 密码 | `AUTH_USER` + `AUTH_PASS` | HTTP Basic 认证 |
+| API Key | `API_KEY`（header 名作为元数据） | `X-API-Key` 类密钥 |
+| OAuth2 客户端凭据 | `OAUTH_TOKEN_URL` / `OAUTH_CLIENT_ID` / `OAUTH_CLIENT_SECRET`（可带 `OAUTH_SCOPE`） | 机器对机器 OAuth2 |
+| OAuth2 刷新令牌 | `OAUTH_TOKEN_URL` / `OAUTH_REFRESH_TOKEN`（可带 client id/secret） | 长时间压测定期刷新 token |
+
+环境变量名每条凭据可自定义——多条 OAuth2 凭据请使用不同前缀，避免互相覆盖。
+
+**身份池。** 一条凭据可存多个秘密值（每行一个），注入时以 `\n` 连接进同一个变量，脚本按 VU 轮转：
+
+```js
+const TOKENS = (__ENV.AUTH_TOKEN || "").split("\n").filter(Boolean);
+const token = TOKENS[__VU % TOKENS.length];
+```
+
+**批量导入。** 导入对话框支持粘贴或选择文件，格式支持 `.env`、JSON、CSV。
+
+**AI 与凭据的配合。** 每次生成请求都会自动附带凭据清单——名称、模式、环境变量名、池大小，**绝不含值**。描述场景时直接提认证方式（例如"每个 VU 用 E2E OAuth2 凭据认证"），生成的脚本就会读取对应的 `__ENV` 变量。OAuth2 的标准写法是在 `setup()` 里换一次 token：
+
+```js
+export function setup() {
+  const res = http.post(
+    __ENV.OAUTH_TOKEN_URL,
+    `grant_type=client_credentials&client_id=${__ENV.OAUTH_CLIENT_ID}&client_secret=${__ENV.OAUTH_CLIENT_SECRET}`,
+    { headers: { "Content-Type": "application/x-www-form-urlencoded" } },
+  );
+  return { token: res.json("access_token") };
+}
+```
+
+**运行时勾选。** 在**实时运行**页勾选本次需要的凭据（记住上次选择）再开始。秘密值只以环境变量注入 k6 子进程——不会出现在命令行、持久化的运行记录或界面上，LLM 也永远只能看到变量名。
 
 ## 技术栈
 
@@ -35,6 +88,7 @@ perf-pilot/
 ├── src-tauri/                 # Rust 后端
 │   └── src/
 │       ├── k6.rs              # k6 运行器 + sidecar 解析
+│       ├── credentials.rs     # 凭据库（系统凭据库）+ 环境变量注入
 │       ├── llm.rs             # LLM 客户端
 │       ├── llm_stream.rs      # SSE 流式响应解析
 │       ├── fs.rs              # 脚本 / 运行记录读写
@@ -49,8 +103,8 @@ perf-pilot/
 
 | 平台 | 文件 |
 | --- | --- |
-| macOS Apple Silicon | `PerfPilot-0.1.0-arm64.dmg` |
-| Windows x64 | `PerfPilot_0.1.0_x64-setup.exe` |
+| macOS Apple Silicon | `PerfPilot-0.1.5-arm64.dmg` |
+| Windows x64 | `PerfPilot_0.1.5_x64-setup.exe` |
 
 ## 快速开始（开发）
 
